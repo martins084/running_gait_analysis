@@ -1,0 +1,39 @@
+# ── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environment ─────────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── IDE / editor ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Data (large files — track separately or via DVC) ────────────────────
+data/raw/
+data/processed/
+data/synthetic/
+uploads/
+results/
+
+# ── Model weights ───────────────────────────────────────────────────────
+models/pretrained/*.pt
+models/pretrained/*.pth
+models/pretrained/*.onnx
+
+# ── OS junk ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Env / secrets ───────────────────────────────────────────────────────
+.env
+*.env
