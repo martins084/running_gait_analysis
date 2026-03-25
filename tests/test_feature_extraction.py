@@ -114,3 +114,6 @@ class TestStrideMetrics:
         metrics = extractor.compute_stride_metrics(landmarks_seq, fps)
         assert metrics, "No stride metrics returned"
         assert metrics["num_strides_detected"] >= 2, "Too few strides detected"
+        # Cadence = 120 / stride_time (L→L interval); should be in a sane range
+        assert "cadence_steps_per_min" in metrics
+        assert metrics["cadence_steps_per_min"] > 50

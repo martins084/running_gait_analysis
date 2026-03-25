@@ -141,69 +141,132 @@ class FeatureExtractor:
 
     def compute_stride_metrics(self, landmarks_seq: list, fps: int) -> dict:
         """
-        Compute stride length (in pixel-space), stride time, and cadence.
+        Stride length, stride period, and cadence from ankle motion.
 
-        Uses the left ankle's vertical position to find ground-contact
-        frames (local maxima of y, since y increases downward in image
-        coordinates).
+        Ground contact is approximated by **local maxima of ankle y**
+        (image coords: y grows downward, so high y = foot low / near ground).
+
+        **Cadence (steps/min)** — One *stride* = left foot strike to next left
+        foot strike; that interval contains **two steps** (L then R). So:
+
+            cadence = 120 / stride_time_sec
+
+        (Using 60/stride_time was half the true step rate — common bug.)
+
+        We also merge L+R ankle peaks to estimate cadence independently and
+        report **stride_length** normalized by hip width (scale-free across zoom).
         """
-        # Collect left-ankle y-positions (ground contact = high y)
-        ankle_y = []
-        ankle_x = []
+        j = self.JOINTS
+
+        def _series(idx: int) -> tuple[np.ndarray, np.ndarray]:
+            ys, xs = [], []
+            for lm in landmarks_seq:
+                if lm is not None:
+                    ys.append(lm[idx][1])
+                    xs.append(lm[idx][0])
+                else:
+                    ys.append(np.nan)
+                    xs.append(np.nan)
+            return np.array(ys), np.array(xs)
+
+        def _interp(y_arr: np.ndarray) -> np.ndarray | None:
+            valid = ~np.isnan(y_arr)
+            if valid.sum() < 10:
+                return None
+            return np.interp(
+                np.arange(len(y_arr)),
+                np.where(valid)[0],
+                y_arr[valid],
+            )
+
+        left_y, left_x = _series(j["left_ankle"])
+        right_y, right_x = _series(j["right_ankle"])
+
+        left_y_clean = _interp(left_y)
+        right_y_clean = _interp(right_y)
+        if left_y_clean is None:
+            return {}
+
+        valid = ~np.isnan(left_y)
+        left_x_clean = np.interp(
+            np.arange(len(left_x)),
+            np.where(valid)[0],
+            left_x[valid],
+        )
+
+        # --- Same-foot (left) peaks: stride period = L → next L ---
+        min_dist = max(1, int(fps * 0.28))
+        peaks_left, _ = signal.find_peaks(left_y_clean, distance=min_dist)
+
+        out: dict = {}
+
+        if len(peaks_left) >= 2:
+            stride_lengths = [
+                abs(left_x_clean[peaks_left[i + 1]] - left_x_clean[peaks_left[i]])
+                for i in range(len(peaks_left) - 1)
+            ]
+            stride_times = np.diff(peaks_left) / fps
+            mean_stride_time = float(np.mean(stride_times))
+            out["stride_length_px"] = round(float(np.mean(stride_lengths)), 4)
+            out["stride_time_sec"] = round(mean_stride_time, 4)
+            # Two steps per full stride (L–R–L)
+            out["cadence_steps_per_min"] = (
+                round(120.0 / mean_stride_time, 1) if mean_stride_time > 0 else 0.0
+            )
+            out["num_same_foot_contacts_left"] = int(len(peaks_left))
+
+        # Hip width (median) for normalized stride — robust to single-frame noise
+        hip_w = []
         for lm in landmarks_seq:
             if lm is not None:
-                ankle_y.append(lm[self.JOINTS["left_ankle"]][1])
-                ankle_x.append(lm[self.JOINTS["left_ankle"]][0])
-            else:
-                ankle_y.append(np.nan)
-                ankle_x.append(np.nan)
+                hip_w.append(abs(lm[j["left_hip"]][0] - lm[j["right_hip"]][0]))
+        if hip_w:
+            w = float(np.median(hip_w))
+            if w > 1e-8 and "stride_length_px" in out:
+                out["stride_length_over_hip_width"] = round(out["stride_length_px"] / w, 4)
 
-        ankle_y = np.array(ankle_y)
-        ankle_x = np.array(ankle_x)
+        # --- Merged L+R foot-strike times (dedupe double-hits) ---
+        peaks_right = np.array([], dtype=int)
+        if right_y_clean is not None:
+            pr, _ = signal.find_peaks(right_y_clean, distance=min_dist)
+            peaks_right = pr
 
-        # Interpolate NaNs so peak-finding works on a continuous signal
-        valid = ~np.isnan(ankle_y)
-        if valid.sum() < 10:
-            return {}
-
-        ankle_y_clean = np.interp(
-            np.arange(len(ankle_y)),
-            np.where(valid)[0],
-            ankle_y[valid],
+        events = sorted(
+            [(int(i), "L") for i in peaks_left] + [(int(i), "R") for i in peaks_right]
         )
-        ankle_x_clean = np.interp(
-            np.arange(len(ankle_x)),
-            np.where(valid)[0],
-            ankle_x[valid],
-        )
+        merged_frames = self._merge_close_events(events, min_sep_frames=max(1, int(fps * 0.12)))
 
-        # Find ground-contact peaks (high y = foot low in image)
-        # Minimum distance between peaks is roughly half a stride (~0.3 s)
-        min_dist = max(1, int(fps * 0.3))
-        peaks, _ = signal.find_peaks(ankle_y_clean, distance=min_dist)
+        if len(merged_frames) >= 2:
+            dt = np.diff(merged_frames) / fps
+            mean_step = float(np.mean(dt))
+            out["cadence_steps_per_min_merged"] = (
+                round(60.0 / mean_step, 1) if mean_step > 0 else 0.0
+            )
+            out["num_foot_strikes_merged"] = int(len(merged_frames))
 
-        if len(peaks) < 2:
-            return {}
+        # Legacy-compatible key: total left peaks (informative for debugging)
+        if peaks_left.size:
+            out["num_strides_detected"] = int(len(peaks_left))
 
-        # Stride length: horizontal distance between consecutive contacts
-        stride_lengths = [
-            abs(ankle_x_clean[peaks[i + 1]] - ankle_x_clean[peaks[i]])
-            for i in range(len(peaks) - 1)
-        ]
+        return out if out else {}
 
-        # Stride time: time between consecutive contacts
-        stride_times = [
-            (peaks[i + 1] - peaks[i]) / fps for i in range(len(peaks) - 1)
-        ]
-
-        mean_stride_time = float(np.mean(stride_times)) if stride_times else 0
-
-        return {
-            "stride_length_px": round(float(np.mean(stride_lengths)), 4),
-            "stride_time_sec": round(mean_stride_time, 4),
-            "cadence_steps_per_min": round(60.0 / mean_stride_time, 1) if mean_stride_time > 0 else 0,
-            "num_strides_detected": len(peaks),
-        }
+    @staticmethod
+    def _merge_close_events(
+        events: list[tuple[int, str]],
+        min_sep_frames: int,
+    ) -> list[int]:
+        """
+        Sort by frame index; drop events closer than min_sep_frames to the
+        previous kept event (avoids duplicate L+R peaks same instant).
+        """
+        if not events:
+            return []
+        events = sorted(events, key=lambda e: e[0])
+        kept = [events[0][0]]
+        for frame_idx, _side in events[1:]:
+            if frame_idx - kept[-1] >= min_sep_frames:
+                kept.append(frame_idx)
+        return kept
 
     # =====================================================================
     # Symmetry
