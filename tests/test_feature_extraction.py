@@ -117,3 +117,79 @@ class TestStrideMetrics:
         # Cadence = 120 / stride_time (L→L interval); should be in a sane range
         assert "cadence_steps_per_min" in metrics
         assert metrics["cadence_steps_per_min"] > 50
+
+
+# ── Temporal smoothing tests ────────────────────────────────────────────
+
+class TestTemporalSmoothing:
+    """Validate Savitzky–Golay sequence smoothing behavior."""
+
+    def _make_frame(self, ankle_x: float, ankle_y: float) -> np.ndarray:
+        """
+        Create one 33x4 landmark frame with deterministic values.
+        Only ankle coordinates vary between frames for easy assertions.
+        """
+        lm = np.zeros((33, 4))
+        lm[:, 3] = 1.0  # full visibility by default
+        lm[27, 0] = ankle_x
+        lm[27, 1] = ankle_y
+        return lm
+
+    def test_short_sequence_is_returned_unchanged(self):
+        """
+        If frame count is below smooth_window, smoothing should be skipped.
+        This avoids introducing artifacts on very short clips.
+        """
+        extractor = FeatureExtractor(fps=30, smooth_window=7)
+        seq = [self._make_frame(0.5 + i * 0.01, 0.7) for i in range(5)]
+
+        out = extractor._smooth_sequence(seq)
+
+        assert len(out) == len(seq)
+        for i in range(len(seq)):
+            assert np.allclose(out[i], seq[i]), "Short sequence should remain unchanged"
+
+    def test_none_frames_are_preserved_in_place(self):
+        """
+        Frames with missing detections must stay None after smoothing.
+        Only valid frames should be smoothed and written back.
+        """
+        extractor = FeatureExtractor(fps=30, smooth_window=5)
+        seq = [
+            self._make_frame(0.45, 0.70),
+            None,
+            self._make_frame(0.50, 0.72),
+            self._make_frame(0.55, 0.74),
+            None,
+            self._make_frame(0.60, 0.76),
+            self._make_frame(0.65, 0.78),
+        ]
+
+        out = extractor._smooth_sequence(seq)
+
+        assert out[1] is None
+        assert out[4] is None
+        assert isinstance(out[0], np.ndarray)
+        assert isinstance(out[2], np.ndarray)
+
+    def test_smoothing_reduces_high_frequency_noise(self):
+        """
+        A noisy ankle trajectory should become closer to the clean reference
+        after smoothing (lower mean squared error).
+        """
+        extractor = FeatureExtractor(fps=30, smooth_window=7)
+        n = 25
+        t = np.arange(n)
+        clean = 0.5 + 0.04 * np.sin(2 * np.pi * t / 12.0)
+        # Alternating jitter term (Nyquist-frequency-like) to emulate frame jitter.
+        noise = 0.015 * np.where((t % 2) == 0, 1.0, -1.0)
+        noisy = clean + noise
+
+        seq = [self._make_frame(float(noisy[i]), 0.7) for i in range(n)]
+        out = extractor._smooth_sequence(seq)
+        smoothed = np.array([frame[27, 0] for frame in out])
+
+        mse_noisy = float(np.mean((noisy - clean) ** 2))
+        mse_smooth = float(np.mean((smoothed - clean) ** 2))
+
+        assert mse_smooth < mse_noisy, "Smoothing should reduce trajectory noise"

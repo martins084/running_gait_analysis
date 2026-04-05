@@ -1,0 +1,137 @@
+/** Latvian UI strings — same keys as `en`; values are Latvian. */
+import type { LocaleMessages } from "./en";
+
+const lvMessages = {
+  nav: {
+    skip: "Pāriet uz saturu",
+    brand: "Track ledger",
+    brandSub: "Skrējiena gaitas analīze",
+    primaryAria: "Galvenā navigācija",
+    newAnalysis: "Jauna analīze",
+    home: "Sākums",
+    apiOk: "API pieejams",
+    apiErr: "API nav pieejams",
+    apiCheck: "Pārbauda API…",
+  },
+  theme: {
+    light: "Gaišs",
+    dark: "Tumšs",
+    ariaLight: "Pārslēgt uz gaišu tēmu",
+    ariaDark: "Pārslēgt uz tumšu tēmu",
+  },
+  lang: {
+    lv: "LV",
+    en: "EN",
+    aria: "Saskarnes valoda",
+  },
+  analyze: {
+    title: "Skrējiena gaitas analīze",
+    subtitle:
+      "Labāk der sānskata ieraksti. Kadros viens skrējējs. Ilgiem failiem analīze var ilgt līdz piecām minūtēm.",
+    meta: "Poza · rādītāji · anotēts video · REST + saskarne",
+    resumeLast: "Atvērt pēdējo rezultātu →",
+    processing:
+      "Apstrādā pozu, rādītājus un anotēto video. Varat atstāt cilni atvērtu — progress ir serverī.",
+    elapsed: "Pagājis laiks",
+    errorPrefix: "Neizdevās pabeigt analīzi.",
+    failedGeneric: "Analīze neizdevās.",
+    timeMinSec: "{{m}} min {{s}} s",
+    timeSec: "{{s}} s",
+  },
+  upload: {
+    title: "Ievelciet skrējiena video šeit",
+    hint: "Formāti: {{formats}} · maks. {{max}} MB",
+    chooseFile: "Izvēlēties failu",
+    badFormat: "Izmantojiet vienu no: {{list}}",
+    tooLarge: "Fails pārāk liels. Maksimums {{max}} MB.",
+  },
+  results: {
+    loadingAria: "Ielādē rezultātus",
+    sessionAria: "Sesija",
+    newAnalysis: "← Jauna analīze",
+    title: "Analīze",
+    copyId: "Kopēt ID",
+    copied: "Nokopēts",
+    regionAria: "Analīzes rādītāji un diagrammas",
+    jumpNavAria: "Pāriet uz sadaļu",
+    jumpLabel: "Pāriet uz",
+    stride: "Soļi",
+    vertical: "Vertikāli",
+    com: "COM",
+    angles: "Leņķi",
+    symmetry: "Simetrija",
+    mlPhases: "ML fāzes",
+    verticalTitle: "Vertikālās svārstības",
+    verticalNote:
+      "Gurnu vertikālais diapazons (normalizēts y, 5.–95. procentīlis). Ne augums metros.",
+    compareSoon: "Salīdzināt sesijas",
+    compareTitle: "Drīzumā",
+    missingId: "Trūkst analīzes ID.",
+    loadFailed: "Neizdevās ielādēt rezultātus.",
+    noData: "Nav datu.",
+    backUpload: "Atpakaļ uz augšupielādi",
+  },
+  status: {
+    completed: "pabeigts",
+    pending: "gaida",
+  },
+  video: {
+    title: "Anotētais video",
+    caption: "Pārklājuma priekšskatījums",
+    note: "Kontūras ir ierakstītas MP4; COM marķieris tiek zīmēts pārlūkā (viens pārklājums, sinhronizēts ar grafikiem).",
+    fallback:
+      "Pārlūks nevarēja atskaņot failu (kodeks vai tīkls). Izmantojiet lejupielādi zemāk — parasti strādā VLC vai citā atskaņotājā.",
+    openDownload: "Atvērt / lejupielādēt video",
+    downloadMp4: "Lejupielādēt MP4",
+    comLegend:
+      "Oranžs marķieris: aptuvenais ķermeņa masas centrs (segmentu svērtais, 2D). Sinhronizēts ar grafikiem; līnija — nesenā kustība.",
+    comFallbackWarn: "Neizdevās ielādēt pozu datus COM pārklājam — tikai video.",
+  },
+  metrics: {
+    title: "Soļa ritms un parametri",
+    note:
+      "Vērtības ir normalizētās attēla koordinātās, ne metros. Liels soļa / gurnu platuma attiecības koeficients (bieži ~10–50) sānskata kadros ir normāls.",
+    cadenceMerged: "Soļu biežums (apvienotais)",
+    cadenceLeft: "Soļu biežums (kreisā kāja)",
+    strideTime: "Soļa ilgums",
+    strideLength: "Soļa garums (norm. Δx)",
+    strideHipRatio: "Soļa / gurnu platums",
+    footStrikes: "Pēdu piesitieni (apvienoti)",
+    leftContacts: "Kreisās puses kontakti",
+    stridesDetected: "Noteiktie soļi",
+    stepsPerMin: "soļi/min",
+  },
+  charts: {
+    jointTitle: "Locītavu leņķi",
+    jointNote: "Grādi attēla plaknē (rādīšanai retināts).",
+    frameAxis: "Kadrs",
+    symTitle: "Kreisā–labā simetrija",
+    symNote: "1 = vislielākā simetrija 2D projekcijā (retināts).",
+    leftHip: "Kreisais gurns",
+    rightHip: "Labais gurns",
+    leftKnee: "Kreisais celis",
+    rightKnee: "Labais celis",
+    comTitle: "Aptuvenais COM (normalizēts)",
+    comNote:
+      "Segmentu svērtais masas centrs attēla plaknē (x, y ∈ [0, 1]); rādīšanai retināts. COM y ≈ vertikālā svārstība; COM x ≈ sānvērs (sānskats).",
+    comEmpty: "Nav COM laikrindas šai analīzei. Palaid analīzi atkārtoti vai ielādē pozu datus.",
+    comX: "COM x (horizontāli)",
+    comY: "COM y (vertikāli)",
+    comYAxisLabel: "norm.",
+  },
+  ml: {
+    title: "Gaitas fāzes (ML)",
+    placeholderNote:
+      "Fāžu apzīmējumi parādīsies, kad klasifikators būs pieslēgts API. Stāstniecības ieskati v1 nav pieejami.",
+    waiting: "Gaida ML cauruli",
+    devMock: "Izstrādes priekšskatījums (imitācija). Aizstāt ar īstu klasifikatoru.",
+    modelPrefix: "Modelis:",
+    perFrame: "Fāžu novērtējums pa kadriem.",
+    timelineAria: "Gaitas fāžu laika josla",
+    phaseStance: "atbalsts",
+    phaseSwing: "šūpošana",
+    phasePush: "piespiešana",
+  },
+};
+
+export const lv = lvMessages as unknown as LocaleMessages;

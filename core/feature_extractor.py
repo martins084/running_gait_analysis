@@ -17,6 +17,8 @@ import numpy as np
 from scipy import signal
 from typing import Optional
 
+from utils.com_segmentation import compute_segment_weighted_com_xy
+
 
 class FeatureExtractor:
     """
@@ -51,6 +53,10 @@ class FeatureExtractor:
         self.fps = fps
         self.dt = 1.0 / fps
         self.smooth_window = smooth_window
+        # Foot/ankle landmarks below this visibility are ignored for stride metrics.
+        self.foot_visibility_threshold = 0.45
+        # Per-frame jump guard in normalized image coordinates.
+        self.max_ankle_delta_per_frame = 0.08
 
     # =====================================================================
     # Public API — high-level
@@ -61,7 +67,8 @@ class FeatureExtractor:
         One-shot: load a pose JSON file and compute every feature.
 
         Returns a dict with keys:
-          stride_metrics, joint_angles, symmetry, vertical_oscillation
+          stride_metrics, joint_angles, symmetry, vertical_oscillation,
+          com_xy_per_frame, video_frame_count, fps, frame_count
         """
         with open(poses_json) as f:
             data = json.load(f)
@@ -85,11 +92,32 @@ class FeatureExtractor:
         ]
         vert_osc = self._compute_vertical_oscillation(smoothed)
 
+        # Segment-weighted COM per frame (normalized x,y); null when pose missing / unreliable.
+        com_xy_per_frame: list[dict[str, float] | None] = []
+        for lm in smoothed:
+            if lm is None:
+                com_xy_per_frame.append(None)
+                continue
+            c = compute_segment_weighted_com_xy(lm)
+            if c is None:
+                com_xy_per_frame.append(None)
+            else:
+                com_xy_per_frame.append({"x": round(c[0], 6), "y": round(c[1], 6)})
+
+        n_video = len(smoothed)
+
         return {
             "stride_metrics": stride,
             "joint_angles": angles,
             "symmetry": symmetry,
             "vertical_oscillation_px": vert_osc,
+            "com_xy_per_frame": com_xy_per_frame,
+            # Full video length (matches pose JSON / COM series); may exceed len(joint_angles)
+            # when some frames lack pose (legacy angle list filters Nones).
+            "video_frame_count": n_video,
+            # Same fps as in pose JSON (used by clients for video ↔ frame sync).
+            "fps": int(fps),
+            "frame_count": len(angles),
         }
 
     # =====================================================================
@@ -162,8 +190,14 @@ class FeatureExtractor:
             ys, xs = [], []
             for lm in landmarks_seq:
                 if lm is not None:
-                    ys.append(lm[idx][1])
-                    xs.append(lm[idx][0])
+                    # Confidence filtering: low-visibility foot points are unreliable.
+                    vis = lm[idx][3] if lm.shape[1] > 3 else 1.0
+                    if vis >= self.foot_visibility_threshold:
+                        ys.append(lm[idx][1])
+                        xs.append(lm[idx][0])
+                    else:
+                        ys.append(np.nan)
+                        xs.append(np.nan)
                 else:
                     ys.append(np.nan)
                     xs.append(np.nan)
@@ -188,11 +222,20 @@ class FeatureExtractor:
             return {}
 
         valid = ~np.isnan(left_y)
-        left_x_clean = np.interp(
-            np.arange(len(left_x)),
-            np.where(valid)[0],
-            left_x[valid],
-        )
+        left_x_clean = _interp(left_x)
+        if left_x_clean is None:
+            return {}
+
+        # Outlier rejection: remove unrealistic ankle jumps, then smooth ankles harder.
+        left_x_clean = self._reject_outlier_jumps(left_x_clean)
+        left_y_clean = self._reject_outlier_jumps(left_y_clean)
+        if right_y_clean is not None:
+            right_y_clean = self._reject_outlier_jumps(right_y_clean)
+
+        left_x_clean = self._smooth_ankle_signal(left_x_clean)
+        left_y_clean = self._smooth_ankle_signal(left_y_clean)
+        if right_y_clean is not None:
+            right_y_clean = self._smooth_ankle_signal(right_y_clean)
 
         # --- Same-foot (left) peaks: stride period = L → next L ---
         min_dist = max(1, int(fps * 0.28))
@@ -249,6 +292,36 @@ class FeatureExtractor:
             out["num_strides_detected"] = int(len(peaks_left))
 
         return out if out else {}
+
+    def _reject_outlier_jumps(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Remove large frame-to-frame jumps in a 1D ankle signal.
+        Mark outliers as NaN and re-interpolate to keep continuity.
+        """
+        cleaned = arr.astype(float).copy()
+        if len(cleaned) < 3:
+            return cleaned
+
+        diffs = np.abs(np.diff(cleaned))
+        outlier_idx = np.where(diffs > self.max_ankle_delta_per_frame)[0] + 1
+        cleaned[outlier_idx] = np.nan
+
+        valid = ~np.isnan(cleaned)
+        if valid.sum() < 2:
+            return arr
+        return np.interp(np.arange(len(cleaned)), np.where(valid)[0], cleaned[valid])
+
+    @staticmethod
+    def _smooth_ankle_signal(arr: np.ndarray) -> np.ndarray:
+        """Apply stronger Savitzky–Golay smoothing for ankle stability."""
+        n = len(arr)
+        if n < 7:
+            return arr
+        # Prefer a wider odd window, capped by sequence length.
+        win = 11 if n >= 11 else (n if n % 2 == 1 else n - 1)
+        if win < 5:
+            return arr
+        return signal.savgol_filter(arr, window_length=win, polyorder=2)
 
     @staticmethod
     def _merge_close_events(

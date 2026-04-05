@@ -1,0 +1,21 @@
+{
+  "updated": "2026-03-28",
+  "note": "Edit statuses as you add data. Paths are relative to project root.",
+  "datasets": {
+    "coco_annotations": {
+      "expected_relative_path": "data/raw/coco/annotations",
+      "status": "verified",
+      "notes": "instances_*.json present; verify_coco_setup.py passed on instances_val2017.json (structure + counts)."
+    },
+    "coco_val_images": {
+      "expected_relative_path": "data/raw/coco/val2017",
+      "status": "not_downloaded",
+      "notes": "Optional: needed only for image-based PCK experiments."
+    },
+    "sample_running_videos": {
+      "expected_relative_path": "data/raw/sample_videos",
+      "status": "in_use",
+      "notes": "3 stock MP4s (numeric filenames); YouTube downloads removed 2026-03-28. Pipeline: scripts/process_videos.py — fill docs/MediaPipe_Accuracy_Notes.md."
+    }
+  }
+}

@@ -5,6 +5,8 @@ __pycache__/
 dist/
 build/
 *.egg
+.coverage
+htmlcov/
 
 # ── Virtual environment ─────────────────────────────────────────────────
 venv/
@@ -13,6 +15,7 @@ env/
 
 # ── IDE / editor ────────────────────────────────────────────────────────
 .vscode/
+.vs/
 .idea/
 *.swp
 *.swo
@@ -37,3 +40,7 @@ desktop.ini
 # ── Env / secrets ───────────────────────────────────────────────────────
 .env
 *.env
+
+# ── Node (web frontend) ───────────────────────────────────────────────
+node_modules/
+frontend/dist/

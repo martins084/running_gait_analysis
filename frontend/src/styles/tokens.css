@@ -1,0 +1,99 @@
+/* Track ledger — design tokens (light default; dark via [data-theme="dark"]) */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg: #f2efe9;
+  --bg-noise: rgba(20, 17, 15, 0.02);
+  --surface: #faf8f5;
+  --surface-elevated: #fffdf9;
+  --lane-line: rgba(20, 17, 15, 0.06);
+
+  /* Text */
+  --text: #14110f;
+  --text-muted: #5c534c;
+
+  /* Lines */
+  --border: rgba(20, 17, 15, 0.12);
+  --border-strong: rgba(20, 17, 15, 0.22);
+
+  /* Accent — ember / track line */
+  --accent: #d95d39;
+  --accent-hover: #c24e2e;
+  --accent-muted: rgba(217, 93, 57, 0.14);
+  --focus-ring: rgba(217, 93, 57, 0.45);
+
+  /* Status */
+  --ok: #2d6a4f;
+  --ok-bg: rgba(45, 106, 79, 0.12);
+  --error-bg: rgba(176, 48, 48, 0.1);
+  --error-text: #8b2222;
+
+  /* Charts */
+  --chart-grid: rgba(20, 17, 15, 0.08);
+  --series-1: #b84a2d;
+  --series-2: #2d6a4f;
+  --series-3: #7c6f64;
+  --series-4: #5c4d7a;
+  --phase-stance: #8a8178;
+  --phase-swing: #d95d39;
+  --phase-push: #bc6c25;
+
+  /* Typography — Source * families: strong Latin Extended (LV/EN), readable UI + editorial headings */
+  --font-serif: "Source Serif 4", "Georgia", "Times New Roman", serif;
+  --font-sans: "Source Sans 3", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-card: 0 1px 0 var(--border);
+
+  /* Layout — results page 3-column breakpoint (matches components.css) */
+  --bp-results-3col: 1100px;
+
+  /* App shell — approximate sticky top bar height for workbench height math */
+  --app-topbar-h: 3.5rem;
+  /* Vertical padding on main when results workbench is shown (top + bottom) */
+  --app-main-pad-results-y: 1rem;
+  /* Breathing room above OS taskbar so card radii don’t sit flush on the window edge */
+  --app-main-pad-results-bottom: 0.85rem;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #121110;
+  --bg-noise: rgba(255, 250, 245, 0.03);
+  --surface: #1c1a18;
+  --surface-elevated: #252220;
+  --lane-line: rgba(255, 250, 245, 0.06);
+
+  --text: #f5f0ea;
+  --text-muted: #a89f96;
+
+  --border: rgba(255, 250, 245, 0.1);
+  --border-strong: rgba(255, 250, 245, 0.18);
+
+  --accent: #e07a5a;
+  --accent-hover: #ea8f72;
+  --accent-muted: rgba(224, 122, 90, 0.18);
+  --focus-ring: rgba(224, 122, 90, 0.5);
+
+  --ok: #6abf8f;
+  --ok-bg: rgba(106, 191, 143, 0.15);
+  --error-bg: rgba(255, 107, 107, 0.12);
+  --error-text: #ff9b9b;
+
+  --chart-grid: rgba(255, 250, 245, 0.08);
+  --series-1: #e07a5a;
+  --series-2: #6abf8f;
+  --series-3: #c4b8ad;
+  --series-4: #b8a9d9;
+  --phase-stance: #7a726a;
+  --phase-swing: #e07a5a;
+  --phase-push: #d4a574;
+
+  --shadow-card: 0 1px 0 var(--border);
+}

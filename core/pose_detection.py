@@ -10,12 +10,27 @@ Provides a PoseDetector class that:
   - Returns normalized (0–1) x, y, z coordinates plus visibility
 """
 
+import os
+
+# Pirms mediapipe: samazina C++/Abseil brīdinājumus (piem. inference_feedback_manager).
+os.environ.setdefault("GLOG_minloglevel", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import cv2
+
+# OpenCV Python log līmenis (FFmpeg/libopenh264 stderr var parādīties atsevišķi).
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except Exception:
+    pass
+
 import json
 import numpy as np
 import mediapipe as mp
 from pathlib import Path
 from tqdm import tqdm
+
+from utils.pose_foot_sanitize import sanitize_pose_sequence
 
 # ── MediaPipe Tasks API aliases ─────────────────────────────────────────
 BaseOptions = mp.tasks.BaseOptions
@@ -191,6 +206,9 @@ class PoseDetector:
                 pbar.update(1)
 
         cap.release()
+
+        # Reduce background mis-attachments (e.g. flag mistaken for foot) before export
+        sanitize_pose_sequence(poses)
 
         # Write JSON output
         output_data = {

@@ -1,0 +1,117 @@
+{
+  "info": {
+    "name": "Running Gait Analysis API",
+    "_postman_id": "f9dc4e43-6cd9-4f66-b173-06086f257db3",
+    "description": "Core API requests for health, analysis, result retrieval, and annotated video download.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "analysisId",
+      "value": ""
+    },
+    {
+      "key": "videoPath",
+      "value": "C:/Users/varna/Downloads/track_runner.mp4"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Analyze Video",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "video",
+              "type": "file",
+              "src": "{{videoPath}}"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/analyze",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "analyze"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"status is 200\", function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "var json = pm.response.json();",
+              "if (json && json.id) {",
+              "  pm.collectionVariables.set(\"analysisId\", json.id);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get Results by ID",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/results/{{analysisId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "results",
+            "{{analysisId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Download Annotated Video",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/download/{{analysisId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "download",
+            "{{analysisId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

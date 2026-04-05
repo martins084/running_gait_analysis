@@ -1,0 +1,29 @@
+# Python cache / bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+
+# Git / IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Local runtime outputs
+uploads/
+results/
+data/
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS artifacts
+Thumbs.db
+.DS_Store
