@@ -76,6 +76,9 @@ export function AppShell({ children }: Props) {
               <Link className="top-bar__link" to="/">
                 {t("nav.newAnalysis")}
               </Link>
+              <Link className="top-bar__link" to="/privacy">
+                {t("privacy.link")}
+              </Link>
             </nav>
           ) : (
             <div className="top-bar__nav-spacer" aria-hidden="true" />

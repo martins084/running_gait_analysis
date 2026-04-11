@@ -4,6 +4,8 @@ test_feature_extraction.py — Unit tests for biomechanical feature calculations
 Validates angle math, stride detection, and symmetry against known inputs.
 """
 
+import json
+
 import numpy as np
 import pytest
 
@@ -193,3 +195,56 @@ class TestTemporalSmoothing:
         mse_smooth = float(np.mean((smoothed - clean) ** 2))
 
         assert mse_smooth < mse_noisy, "Smoothing should reduce trajectory noise"
+
+
+# ── Full extract alignment (video frame index) ───────────────────────────
+
+
+def _minimal_landmarks_list() -> list:
+    """33×4 BlazePose-like list for tests (enough for angles / COM)."""
+    lm = np.zeros((33, 4))
+    lm[:, 3] = 1.0
+    lm[0] = [0.5, 0.1, 0.0, 1.0]
+    lm[7] = lm[8] = [0.5, 0.12, 0.0, 1.0]
+    lm[11] = [0.45, 0.35, 0.0, 1.0]
+    lm[12] = [0.55, 0.35, 0.0, 1.0]
+    lm[23] = [0.45, 0.5, 0.0, 1.0]
+    lm[24] = [0.55, 0.5, 0.0, 1.0]
+    lm[25] = [0.40, 0.7, 0.0, 1.0]
+    lm[26] = [0.60, 0.7, 0.0, 1.0]
+    lm[27] = [0.38, 0.9, 0.0, 1.0]
+    lm[28] = [0.62, 0.9, 0.0, 1.0]
+    lm[29] = [0.37, 0.92, 0.0, 1.0]
+    lm[30] = [0.63, 0.92, 0.0, 1.0]
+    lm[31] = [0.36, 0.95, 0.0, 1.0]
+    lm[32] = [0.64, 0.95, 0.0, 1.0]
+    lm[13] = [0.42, 0.45, 0.0, 1.0]
+    lm[14] = [0.58, 0.45, 0.0, 1.0]
+    lm[15] = [0.40, 0.55, 0.0, 1.0]
+    lm[16] = [0.60, 0.55, 0.0, 1.0]
+    lm[19] = [0.39, 0.58, 0.0, 1.0]
+    lm[20] = [0.61, 0.58, 0.0, 1.0]
+    return lm.tolist()
+
+
+def test_extract_all_joint_angles_aligned_to_video_frames(tmp_path):
+    """Each pose JSON frame must map to one joint_angles / symmetry slot (null if no pose)."""
+    extractor = FeatureExtractor(fps=30, smooth_window=7)
+    poses = [
+        {"frame": 0, "timestamp": 0.0, "landmarks": _minimal_landmarks_list()},
+        {"frame": 1, "timestamp": 1 / 30, "landmarks": None},
+        {"frame": 2, "timestamp": 2 / 30, "landmarks": _minimal_landmarks_list()},
+    ]
+    p = tmp_path / "poses.json"
+    p.write_text(json.dumps({"fps": 30, "poses": poses}), encoding="utf-8")
+
+    out = extractor.extract_all_features(str(p))
+
+    assert out["video_frame_count"] == 3
+    assert out["frame_count"] == 3
+    assert len(out["joint_angles"]) == 3
+    assert len(out["symmetry"]) == 3
+    assert out["joint_angles"][1] is None
+    assert out["symmetry"][1] is None
+    assert isinstance(out["joint_angles"][0], dict)
+    assert isinstance(out["joint_angles"][2], dict)

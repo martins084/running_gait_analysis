@@ -36,3 +36,4 @@ export function normalizedToContentPixel(
     y: r.offsetY + ny * r.contentH,
   };
 }
+

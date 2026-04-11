@@ -59,6 +59,12 @@ def main() -> None:
         default=None,
         help="Optional CSV path for one-row-per-video summary export",
     )
+    parser.add_argument(
+        "--storage-profile",
+        choices=["minimal", "standard", "full"],
+        default="minimal",
+        help="Minimize persisted artifacts: minimal removes poses/video after feature extraction.",
+    )
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -116,13 +122,18 @@ def main() -> None:
         # Use create_annotated_video(..., draw_com=True) for a fully baked COM trail in the file.
         create_annotated_video(str(vp), str(poses_json), str(annotated_mp4))
 
+        if args.storage_profile == "minimal":
+            poses_json.unlink(missing_ok=True)
+            annotated_mp4.unlink(missing_ok=True)
+
         out = {
             "id": analysis_id,
             "status": "completed",
-            "video": str(vp.resolve()),
+            "video_name": vp.name,
             "features": features,
-            "poses_file": str(poses_json.resolve()),
-            "annotated_video": str(annotated_mp4.resolve()),
+            "poses_file": str(poses_json.resolve()) if poses_json.exists() else None,
+            "annotated_video": str(annotated_mp4.resolve()) if annotated_mp4.exists() else None,
+            "storage_profile": args.storage_profile,
         }
         with open(result_json, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=2, default=str)

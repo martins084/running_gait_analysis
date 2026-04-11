@@ -17,6 +17,7 @@ import numpy as np
 from scipy import signal
 from typing import Optional
 
+from core.ml_phases import estimate_ml_phases_for_sequence
 from utils.com_segmentation import compute_segment_weighted_com_xy
 
 
@@ -67,8 +68,10 @@ class FeatureExtractor:
         One-shot: load a pose JSON file and compute every feature.
 
         Returns a dict with keys:
-          stride_metrics, joint_angles, symmetry, vertical_oscillation,
-          com_xy_per_frame, video_frame_count, fps, frame_count
+          stride_metrics, joint_angles (one slot per video frame, null if no pose),
+          symmetry (same), vertical_oscillation_px, com_xy_per_frame,
+          video_frame_count, fps, frame_count,
+          and optionally ``ml`` (geometry-based gait phases + confidence for the UI).
         """
         with open(poses_json) as f:
             data = json.load(f)
@@ -84,12 +87,18 @@ class FeatureExtractor:
 
         # Compute each feature group
         stride = self.compute_stride_metrics(smoothed, fps)
-        angles = [
-            self.compute_joint_angles(lm) for lm in smoothed if lm is not None
-        ]
-        symmetry = [
-            self.compute_symmetry(lm) for lm in smoothed if lm is not None
-        ]
+        # One entry per video frame (same length as `smoothed` / pose JSON) so
+        # clients can align charts and video playheads by frame index. Missing
+        # pose frames must be null, not omitted — otherwise time series shift.
+        angles: list[dict[str, float] | None] = []
+        symmetry: list[float | None] = []
+        for lm in smoothed:
+            if lm is None:
+                angles.append(None)
+                symmetry.append(None)
+            else:
+                angles.append(self.compute_joint_angles(lm))
+                symmetry.append(self.compute_symmetry(lm))
         vert_osc = self._compute_vertical_oscillation(smoothed)
 
         # Segment-weighted COM per frame (normalized x,y); null when pose missing / unreliable.
@@ -106,19 +115,24 @@ class FeatureExtractor:
 
         n_video = len(smoothed)
 
-        return {
+        out: dict = {
             "stride_metrics": stride,
             "joint_angles": angles,
             "symmetry": symmetry,
             "vertical_oscillation_px": vert_osc,
             "com_xy_per_frame": com_xy_per_frame,
-            # Full video length (matches pose JSON / COM series); may exceed len(joint_angles)
-            # when some frames lack pose (legacy angle list filters Nones).
+            # Full video length (matches pose JSON / COM series).
             "video_frame_count": n_video,
             # Same fps as in pose JSON (used by clients for video ↔ frame sync).
             "fps": int(fps),
-            "frame_count": len(angles),
+            # Same as video_frame_count; one angle/symmetry slot per frame (null if no pose).
+            "frame_count": n_video,
         }
+        # Geometry + cadence phase estimate (same schema as future CNN-LSTM hook).
+        ml_block = estimate_ml_phases_for_sequence(smoothed, float(fps), stride)
+        if ml_block:
+            out["ml"] = ml_block
+        return out
 
     # =====================================================================
     # Joint angles

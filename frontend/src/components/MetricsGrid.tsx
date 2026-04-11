@@ -6,6 +6,10 @@ type Props = {
   stride: StrideMetrics;
 };
 
+function optNum(n: number | undefined, digits: number): string {
+  return n === undefined ? "—" : formatNumber(n, digits);
+}
+
 export function MetricsGrid({ stride }: Props) {
   const { t } = useI18n();
 
@@ -17,38 +21,38 @@ export function MetricsGrid({ stride }: Props) {
         <div className="metrics-grid__item">
           <dt>{t("metrics.cadenceMerged")}</dt>
           <dd>
-            {formatNumber(stride.cadence_steps_per_min_merged, 1)} {t("metrics.stepsPerMin")}
+            {optNum(stride.cadence_steps_per_min_merged, 1)} {t("metrics.stepsPerMin")}
           </dd>
         </div>
         <div className="metrics-grid__item">
           <dt>{t("metrics.cadenceLeft")}</dt>
           <dd>
-            {formatNumber(stride.cadence_steps_per_min, 1)} {t("metrics.stepsPerMin")}
+            {optNum(stride.cadence_steps_per_min, 1)} {t("metrics.stepsPerMin")}
           </dd>
         </div>
         <div className="metrics-grid__item">
           <dt>{t("metrics.strideTime")}</dt>
-          <dd>{formatNumber(stride.stride_time_sec, 2)} s</dd>
+          <dd>{stride.stride_time_sec != null ? `${formatNumber(stride.stride_time_sec, 2)} s` : "—"}</dd>
         </div>
         <div className="metrics-grid__item">
           <dt>{t("metrics.strideLength")}</dt>
-          <dd>{formatNumber(stride.stride_length_px, 4)}</dd>
+          <dd>{optNum(stride.stride_length_px, 4)}</dd>
         </div>
         <div className="metrics-grid__item">
           <dt>{t("metrics.strideHipRatio")}</dt>
-          <dd>{formatNumber(stride.stride_length_over_hip_width, 2)}</dd>
+          <dd>{optNum(stride.stride_length_over_hip_width, 2)}</dd>
         </div>
         <div className="metrics-grid__item">
           <dt>{t("metrics.footStrikes")}</dt>
-          <dd>{stride.num_foot_strikes_merged}</dd>
+          <dd>{stride.num_foot_strikes_merged ?? "—"}</dd>
         </div>
         <div className="metrics-grid__item">
           <dt>{t("metrics.leftContacts")}</dt>
-          <dd>{stride.num_same_foot_contacts_left}</dd>
+          <dd>{stride.num_same_foot_contacts_left ?? "—"}</dd>
         </div>
         <div className="metrics-grid__item">
           <dt>{t("metrics.stridesDetected")}</dt>
-          <dd>{stride.num_strides_detected}</dd>
+          <dd>{stride.num_strides_detected ?? "—"}</dd>
         </div>
       </dl>
     </section>

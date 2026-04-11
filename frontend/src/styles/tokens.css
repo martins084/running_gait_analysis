@@ -1,54 +1,53 @@
 /* Track ledger — design tokens (light default; dark via [data-theme="dark"]) */
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
-  /* Surfaces */
-  --bg: #f2efe9;
-  --bg-noise: rgba(20, 17, 15, 0.02);
-  --surface: #faf8f5;
-  --surface-elevated: #fffdf9;
-  --lane-line: rgba(20, 17, 15, 0.06);
+  /* Core palette */
+  --bg: #0f0f0f;
+  --bg-noise: rgba(255, 255, 255, 0.03);
+  --surface: #161616;
+  --surface-elevated: #181818;
+  --lane-line: rgba(255, 255, 255, 0.02);
 
   /* Text */
-  --text: #14110f;
-  --text-muted: #5c534c;
+  --text: #e2e2e2;
+  --text-muted: #606060;
 
-  /* Lines */
-  --border: rgba(20, 17, 15, 0.12);
-  --border-strong: rgba(20, 17, 15, 0.22);
+  /* Borders */
+  --border: #242424;
+  --border-strong: #2c2c2c;
 
-  /* Accent — ember / track line */
-  --accent: #d95d39;
-  --accent-hover: #c24e2e;
-  --accent-muted: rgba(217, 93, 57, 0.14);
-  --focus-ring: rgba(217, 93, 57, 0.45);
-
-  /* Status */
-  --ok: #2d6a4f;
-  --ok-bg: rgba(45, 106, 79, 0.12);
-  --error-bg: rgba(176, 48, 48, 0.1);
-  --error-text: #8b2222;
+  /* Accent + status */
+  --accent: #c8f043;
+  --accent-hover: #b6dc3c;
+  --accent-muted: rgba(200, 240, 67, 0.08);
+  --focus-ring: rgba(200, 240, 67, 0.35);
+  --ok: #4caf7d;
+  --ok-bg: rgba(76, 175, 125, 0.12);
+  --error-bg: rgba(224, 92, 58, 0.12);
+  --error-text: #e05c3a;
 
   /* Charts */
-  --chart-grid: rgba(20, 17, 15, 0.08);
-  --series-1: #b84a2d;
-  --series-2: #2d6a4f;
-  --series-3: #7c6f64;
-  --series-4: #5c4d7a;
-  --phase-stance: #8a8178;
-  --phase-swing: #d95d39;
-  --phase-push: #bc6c25;
+  --chart-grid: rgba(255, 255, 255, 0.07);
+  --series-1: #c8f043;
+  --series-2: #4caf7d;
+  --series-3: #9d9d9d;
+  --series-4: #e05c3a;
+  --phase-stance: #797979;
+  --phase-swing: #c8f043;
+  --phase-push: #e05c3a;
 
-  /* Typography — Source * families: strong Latin Extended (LV/EN), readable UI + editorial headings */
-  --font-serif: "Source Serif 4", "Georgia", "Times New Roman", serif;
-  --font-sans: "Source Sans 3", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  /* Typography — DM Sans/Mono full Latin Extended (LV diacritics); display = tight sans, not a missing-glyph display font */
+  --font-display: "DM Sans", system-ui, sans-serif;
+  --font-serif: var(--font-display);
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
 
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --shadow-card: 0 1px 0 var(--border);
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 4px;
+  --shadow-card: 0 0 0 1px var(--border);
 
   /* Layout — results page 3-column breakpoint (matches components.css) */
   --bp-results-3col: 1100px;
@@ -63,37 +62,14 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
+}
 
-  --bg: #121110;
-  --bg-noise: rgba(255, 250, 245, 0.03);
-  --surface: #1c1a18;
-  --surface-elevated: #252220;
-  --lane-line: rgba(255, 250, 245, 0.06);
-
-  --text: #f5f0ea;
-  --text-muted: #a89f96;
-
-  --border: rgba(255, 250, 245, 0.1);
-  --border-strong: rgba(255, 250, 245, 0.18);
-
-  --accent: #e07a5a;
-  --accent-hover: #ea8f72;
-  --accent-muted: rgba(224, 122, 90, 0.18);
-  --focus-ring: rgba(224, 122, 90, 0.5);
-
-  --ok: #6abf8f;
-  --ok-bg: rgba(106, 191, 143, 0.15);
-  --error-bg: rgba(255, 107, 107, 0.12);
-  --error-text: #ff9b9b;
-
-  --chart-grid: rgba(255, 250, 245, 0.08);
-  --series-1: #e07a5a;
-  --series-2: #6abf8f;
-  --series-3: #c4b8ad;
-  --series-4: #b8a9d9;
-  --phase-stance: #7a726a;
-  --phase-swing: #e07a5a;
-  --phase-push: #d4a574;
-
-  --shadow-card: 0 1px 0 var(--border);
+[data-theme="light"] {
+  color-scheme: dark;
+  /* Keep the same aesthetic in both modes */
+  --bg: #121212;
+  --surface: #171717;
+  --surface-elevated: #1a1a1a;
+  --text: #dddddd;
+  --text-muted: #6a6a6a;
 }

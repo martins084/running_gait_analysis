@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getResults } from "../api/client";
+import { deleteAnalysis, getResults, requestDsarDelete, requestDsarExport, resolveApiUrl } from "../api/client";
 import type { AnalyzeResponse } from "../api/types";
 import { ComOscillationChart } from "../components/ComOscillationChart";
 import { JointAngleChart } from "../components/JointAngleChart";
@@ -65,6 +65,7 @@ export function ResultsPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentFrameIndex, setCurrentFrameIndex] = useState(0);
 
@@ -111,6 +112,31 @@ export function ResultsPage() {
     );
   }, [data?.id]);
 
+  const runExport = useCallback(async () => {
+    if (!data?.id) return;
+    try {
+      const res = await requestDsarExport(data.id);
+      if (res.download) {
+        window.open(resolveApiUrl(res.download), "_blank");
+      }
+      setActionMsg(t("results.exportRequested"));
+    } catch (e) {
+      setActionMsg(e instanceof Error ? e.message : t("results.exportRequested"));
+    }
+  }, [data?.id, t]);
+
+  const runDelete = useCallback(async () => {
+    if (!data?.id) return;
+    if (!window.confirm(t("results.deleteConfirm"))) return;
+    try {
+      await deleteAnalysis(data.id);
+      setActionMsg(t("results.deleted"));
+    } catch {
+      const res = await requestDsarDelete(data.id);
+      if (res.status === "completed") setActionMsg(t("results.deleted"));
+    }
+  }, [data?.id, t]);
+
   const fps = data?.features?.fps ?? null;
   /** Prefer full video length (COM / pose JSON); fall back to angle series for legacy rows. */
   const frameCount =
@@ -129,8 +155,12 @@ export function ResultsPage() {
   const seekToFrame = useCallback(
     (frame: number) => {
       const v = videoRef.current;
-      if (!v) return;
-      seekVideoToFrame(v, frame, frameCount, fps);
+      const clamped = Math.max(0, Math.min(frameCount - 1, Math.round(frame)));
+      if (v) {
+        seekVideoToFrame(v, frame, frameCount, fps);
+      } else {
+        setCurrentFrameIndex(clamped);
+      }
     },
     [frameCount, fps],
   );
@@ -222,13 +252,20 @@ export function ResultsPage() {
             </div>
             <div id="section-ml" className="results-anchor">
               <MlPhasePlaceholder
-                frameCount={features.joint_angles.length}
+                frameCount={frameCount}
                 ml={features.ml}
                 currentFrameIndex={currentFrameIndex}
+                onSeekFrame={seekToFrame}
               />
             </div>
 
             <footer className="results-footer results-footer--compact">
+              <button type="button" className="link-button" onClick={runExport}>
+                {t("results.exportData")}
+              </button>
+              <button type="button" className="link-button" onClick={runDelete}>
+                {t("results.deleteData")}
+              </button>
               <button
                 type="button"
                 className="link-button link-button--ghost"
@@ -237,6 +274,7 @@ export function ResultsPage() {
               >
                 {t("results.compareSoon")}
               </button>
+              {actionMsg && <p className="card__note">{actionMsg}</p>}
             </footer>
           </div>
         </div>

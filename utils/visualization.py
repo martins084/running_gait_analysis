@@ -113,6 +113,15 @@ COM_COLOR = (0, 200, 255)         # orange/cyan mix — stands out on green bone
 COM_TRAIL_COLOR = (60, 140, 220)  # dimmer trail behind current COM
 COM_OUTLINE = (40, 40, 40)
 
+# Annotated MP4 overlay: ~3× thicker strokes vs the original 2px bones / 4px joints
+# so the skeleton stays visible on high-res phone footage and after compression.
+_BONE_THICKNESS = 6
+_JOINT_RADIUS = 12
+_COM_TRAIL_THICKNESS = 6
+_COM_RING_THICKNESS = 6
+_COM_CROSSHAIR_THICKNESS = 3
+
+
 def draw_pose(
     frame: np.ndarray,
     landmarks: list | np.ndarray,
@@ -142,20 +151,27 @@ def draw_pose(
     # Recent COM path (behind skeleton so bones stay readable)
     if draw_com and com_trail and len(com_trail) >= 2:
         pts = np.array(com_trail, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.polylines(frame, [pts], isClosed=False, color=COM_TRAIL_COLOR, thickness=2, lineType=cv2.LINE_AA)
+        cv2.polylines(
+            frame,
+            [pts],
+            isClosed=False,
+            color=COM_TRAIL_COLOR,
+            thickness=_COM_TRAIL_THICKNESS,
+            lineType=cv2.LINE_AA,
+        )
 
     # Draw bones
     for (i, j) in SKELETON_CONNECTIONS:
         x1, y1 = int(lm[i][0] * w), int(lm[i][1] * h)
         x2, y2 = int(lm[j][0] * w), int(lm[j][1] * h)
-        cv2.line(frame, (x1, y1), (x2, y2), BONE_COLOR, 2)
+        cv2.line(frame, (x1, y1), (x2, y2), BONE_COLOR, _BONE_THICKNESS, lineType=cv2.LINE_AA)
 
     # Draw joints
     for idx, pt in enumerate(lm):
         x, y = int(pt[0] * w), int(pt[1] * h)
         vis = pt[3] if len(pt) > 3 else 1.0
         color = JOINT_COLOR_HIGH if vis > 0.5 else JOINT_COLOR_LOW
-        cv2.circle(frame, (x, y), 4, color, -1)
+        cv2.circle(frame, (x, y), _JOINT_RADIUS, color, -1, lineType=cv2.LINE_AA)
 
     # Whole-body COM (segment-weighted 2D proxy) — optional; SPA draws COM on canvas over <video>
     if not draw_com:
@@ -166,11 +182,25 @@ def draw_pose(
         cx = int(np.clip(com_xy[0] * w, 0, w - 1))
         cy = int(np.clip(com_xy[1] * h, 0, h - 1))
         r = max(5, min(w, h) // 90)
-        cv2.circle(frame, (cx, cy), r + 2, COM_OUTLINE, 2, lineType=cv2.LINE_AA)
+        cv2.circle(frame, (cx, cy), r + 2, COM_OUTLINE, _COM_RING_THICKNESS, lineType=cv2.LINE_AA)
         cv2.circle(frame, (cx, cy), r, COM_COLOR, -1, lineType=cv2.LINE_AA)
         d = r + 4
-        cv2.line(frame, (cx - d, cy), (cx + d, cy), COM_OUTLINE, 1, lineType=cv2.LINE_AA)
-        cv2.line(frame, (cx, cy - d), (cx, cy + d), COM_OUTLINE, 1, lineType=cv2.LINE_AA)
+        cv2.line(
+            frame,
+            (cx - d, cy),
+            (cx + d, cy),
+            COM_OUTLINE,
+            _COM_CROSSHAIR_THICKNESS,
+            lineType=cv2.LINE_AA,
+        )
+        cv2.line(
+            frame,
+            (cx, cy - d),
+            (cx, cy + d),
+            COM_OUTLINE,
+            _COM_CROSSHAIR_THICKNESS,
+            lineType=cv2.LINE_AA,
+        )
         return com_xy
 
     return None

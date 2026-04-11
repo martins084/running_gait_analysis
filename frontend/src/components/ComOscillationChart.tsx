@@ -35,6 +35,36 @@ function clampFrame(n: number, maxIdx: number): number {
   return Math.max(0, Math.min(maxIdx, Math.round(n)));
 }
 
+/**
+ * Recharts can emit duplicate / overlapping Y tick labels when the domain span is
+ * tiny (COM y barely moves while COM x sweeps a wider range). Force a minimum
+ * vertical span and round tick text so the axis stays readable.
+ */
+function comPlotYDomain(values: number[]): [number, number] {
+  if (values.length === 0) return [0, 1];
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  const span = hi - lo;
+  const minSpan = 0.1;
+  if (span < 1e-9) {
+    const mid = (lo + hi) / 2;
+    return [mid - minSpan / 2, mid + minSpan / 2];
+  }
+  if (span < minSpan) {
+    const pad = (minSpan - span) / 2;
+    return [lo - pad, hi + pad];
+  }
+  const pad = Math.max(0.02, span * 0.08);
+  return [lo - pad, hi + pad];
+}
+
+function formatComYTick(v: number, domain: [number, number]): string {
+  if (!Number.isFinite(v)) return "";
+  const span = domain[1] - domain[0];
+  const decimals = span > 0.25 ? 2 : span > 0.06 ? 3 : 4;
+  return v.toFixed(decimals);
+}
+
 function handleChartSeek(
   state: ChartClickState | undefined,
   data: Row[],
@@ -69,6 +99,26 @@ export function ComOscillationChart({
     }
     return { frame: i, cx: p.x, cy: p.y };
   });
+
+  const yDomain = useMemo(() => {
+    const vals: number[] = [];
+    if (com_xy_per_frame) {
+      for (const p of com_xy_per_frame) {
+        if (!p) continue;
+        if (Number.isFinite(p.x)) vals.push(p.x);
+        if (Number.isFinite(p.y)) vals.push(p.y);
+      }
+    }
+    const raw = comPlotYDomain(vals);
+    const clamped: [number, number] = [
+      Math.max(-0.08, raw[0]),
+      Math.min(1.08, raw[1]),
+    ];
+    if (clamped[1] <= clamped[0]) {
+      return [0, 1] as [number, number];
+    }
+    return clamped;
+  }, [com_xy_per_frame]);
 
   const showPlayhead = frameCount > 0;
 
@@ -112,8 +162,13 @@ export function ComOscillationChart({
               label={xAxisLabel}
             />
             <YAxis
-              domain={[0, 1]}
+              domain={yDomain}
+              width={52}
+              allowDecimals
               tick={{ fill: "var(--text-muted)", fontSize: 11 }}
+              tickFormatter={(v: number | string) =>
+                formatComYTick(typeof v === "number" ? v : Number(v), yDomain)
+              }
               label={{
                 value: t("charts.comYAxisLabel"),
                 angle: -90,
@@ -126,7 +181,7 @@ export function ComOscillationChart({
               contentStyle={{
                 background: "var(--surface-elevated)",
                 border: "1px solid var(--border)",
-                borderRadius: 8,
+                borderRadius: 4,
               }}
               formatter={(value: number | string) =>
                 typeof value === "number" ? value.toFixed(4) : value

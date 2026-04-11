@@ -96,7 +96,8 @@ def _write_frames_csv(
         n = max(len(joint_angles), len(symmetry))
         for i in range(n):
             ja = joint_angles[i] if i < len(joint_angles) and isinstance(joint_angles[i], dict) else {}
-            sym = symmetry[i] if i < len(symmetry) else ""
+            sym_raw = symmetry[i] if i < len(symmetry) else ""
+            sym = "" if sym_raw is None else sym_raw
             w.writerow(
                 {
                     "frame_id": i,

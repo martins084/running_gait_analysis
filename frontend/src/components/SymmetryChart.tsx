@@ -8,10 +8,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import type { SymmetrySeries } from "../api/types";
 import { useI18n } from "../i18n";
 import { CHART_MAX_POINTS, downsampleIndices } from "../utils/downsample";
 
-type Row = { frame: number; symmetry: number };
+type Row = { frame: number; symmetry: number | null };
 
 type ChartClickState = {
   activeTooltipIndex?: number;
@@ -19,7 +20,7 @@ type ChartClickState = {
 };
 
 type Props = {
-  symmetry: number[];
+  symmetry: SymmetrySeries;
   currentFrameIndex?: number;
   onSeekFrame?: (frame: number) => void;
 };
@@ -50,7 +51,7 @@ export function SymmetryChart({ symmetry, currentFrameIndex = 0, onSeekFrame }: 
   const { t } = useI18n();
   const frameCount = symmetry.length;
   const idx = downsampleIndices(symmetry.length, CHART_MAX_POINTS);
-  const data = idx.map((i) => ({ frame: i, symmetry: symmetry[i] }));
+  const data = idx.map((i) => ({ frame: i, symmetry: symmetry[i] ?? null }));
   const showPlayhead = frameCount > 0;
 
   return (
@@ -86,6 +87,7 @@ export function SymmetryChart({ symmetry, currentFrameIndex = 0, onSeekFrame }: 
               stroke="var(--accent)"
               fill="var(--accent-muted)"
               strokeWidth={1.5}
+              connectNulls={false}
             />
             {showPlayhead && (
               <ReferenceLine

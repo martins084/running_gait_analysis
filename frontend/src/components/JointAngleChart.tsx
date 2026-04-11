@@ -10,16 +10,16 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { JointAnglesFrame } from "../api/types";
+import type { JointAnglesSeries } from "../api/types";
 import { useI18n } from "../i18n";
 import { CHART_MAX_POINTS, downsampleIndices } from "../utils/downsample";
 
 type Row = {
   frame: number;
-  left_hip: number;
-  right_hip: number;
-  left_knee: number;
-  right_knee: number;
+  left_hip: number | null;
+  right_hip: number | null;
+  left_knee: number | null;
+  right_knee: number | null;
 };
 
 type ChartClickState = {
@@ -28,7 +28,7 @@ type ChartClickState = {
 };
 
 type Props = {
-  jointAngles: JointAnglesFrame[];
+  jointAngles: JointAnglesSeries;
   currentFrameIndex?: number;
   onSeekFrame?: (frame: number) => void;
 };
@@ -59,13 +59,19 @@ export function JointAngleChart({ jointAngles, currentFrameIndex = 0, onSeekFram
   const { t } = useI18n();
   const frameCount = jointAngles.length;
   const idx = downsampleIndices(jointAngles.length, CHART_MAX_POINTS);
-  const data: Row[] = idx.map((i) => ({
-    frame: i,
-    left_hip: jointAngles[i].left_hip,
-    right_hip: jointAngles[i].right_hip,
-    left_knee: jointAngles[i].left_knee,
-    right_knee: jointAngles[i].right_knee,
-  }));
+  const data: Row[] = idx.map((i) => {
+    const ja = jointAngles[i];
+    if (!ja) {
+      return { frame: i, left_hip: null, right_hip: null, left_knee: null, right_knee: null };
+    }
+    return {
+      frame: i,
+      left_hip: ja.left_hip,
+      right_hip: ja.right_hip,
+      left_knee: ja.left_knee,
+      right_knee: ja.right_knee,
+    };
+  });
 
   const showPlayhead = frameCount > 0;
 
@@ -119,6 +125,7 @@ export function JointAngleChart({ jointAngles, currentFrameIndex = 0, onSeekFram
               stroke="var(--series-1)"
               dot={false}
               strokeWidth={1.5}
+              connectNulls={false}
             />
             <Line
               type="monotone"
@@ -127,6 +134,7 @@ export function JointAngleChart({ jointAngles, currentFrameIndex = 0, onSeekFram
               stroke="var(--series-2)"
               dot={false}
               strokeWidth={1.5}
+              connectNulls={false}
             />
             <Line
               type="monotone"
@@ -135,6 +143,7 @@ export function JointAngleChart({ jointAngles, currentFrameIndex = 0, onSeekFram
               stroke="var(--series-3)"
               dot={false}
               strokeWidth={1.5}
+              connectNulls={false}
             />
             <Line
               type="monotone"
@@ -143,6 +152,7 @@ export function JointAngleChart({ jointAngles, currentFrameIndex = 0, onSeekFram
               stroke="var(--series-4)"
               dot={false}
               strokeWidth={1.5}
+              connectNulls={false}
             />
             {showPlayhead && (
               <ReferenceLine

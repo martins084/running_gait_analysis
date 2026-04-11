@@ -44,6 +44,22 @@ python api/app.py
 
 The `frontend/` app is a React + Vite single-page UI for upload, progress, metrics, charts, and annotated video playback. UI fonts ship with the repo via **`@fontsource/*`** (Source Sans 3, Source Serif 4, IBM Plex Mono, with Latin Extended subsets for Latvian) — run **`npm install`** so they bundle correctly. The top bar includes a **light/dark** toggle (saved in `localStorage`) and a small **API health** indicator.
 
+### Privacy and GDPR controls
+
+- User account auth is required for analysis and result access (`/auth/register`, `/auth/login`).
+- Analyses are user-scoped; result/pose/download endpoints enforce ownership.
+- Consent is required before upload in the web UI.
+- Data-subject rights endpoints:
+  - `POST /dsar/export`
+  - `POST /dsar/delete`
+  - `GET /dsar/{request_id}`
+- Retention purge is profile-based (`minimal`, `standard`, `full`) and configurable through environment variables.
+- See:
+  - `docs/privacy-policy.md`
+  - `docs/data-retention-policy.md`
+  - `docs/dsar-runbook.md`
+  - `docs/dpia.md`
+
 **Development (two terminals):**
 
 ```bash

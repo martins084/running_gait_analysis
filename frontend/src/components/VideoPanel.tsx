@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { getPosesJson, resolveApiUrl } from "../api/client";
+import { fetchAuthenticatedBlob, getPosesJson, resolveApiUrl } from "../api/client";
 import type { ComXY } from "../api/types";
 import { useI18n } from "../i18n";
 import { computeComSeriesFromPosesJson } from "../utils/comSegmentation";
@@ -9,7 +9,8 @@ const TRAIL_LEN = 20;
 
 type Props = {
   analysisId: string;
-  annotatedVideoPath: string;
+  /** `null` / missing when minimal profile — server did not retain annotated MP4. */
+  annotatedVideoPath: string | null | undefined;
   videoRef: RefObject<HTMLVideoElement>;
   /** Synced with charts / `useVideoFrameSync`. */
   currentFrameIndex: number;
@@ -25,9 +26,17 @@ export function VideoPanel({
   com_xy_per_frame,
 }: Props) {
   const { t } = useI18n();
-  const src = resolveApiUrl(annotatedVideoPath);
   const downloadHref = resolveApiUrl(`/download/${analysisId}`);
-  const [videoError, setVideoError] = useState(false);
+  /** Blob URL — `<video src>` cannot send `Authorization`; fetch with token then play locally. */
+  const [mediaObjectUrl, setMediaObjectUrl] = useState<string | null>(null);
+  /**
+   * `fetch_blob` → API blob received → `decode` (video element mounted, waiting for metadata) → `ready`.
+   * Hiding the player until `loadedmetadata` avoids an empty/black frame that feels like “video didn’t load”.
+   */
+  const [videoPhase, setVideoPhase] = useState<
+    "unavailable" | "fetch_blob" | "decode" | "ready" | "error"
+  >(() => (annotatedVideoPath ? "fetch_blob" : "unavailable"));
+  const mediaUrlRef = useRef<string | null>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   /** COM series from `/poses` when API did not include `com_xy_per_frame` (legacy analyses). */
@@ -47,6 +56,50 @@ export function VideoPanel({
     setPosesError(false);
     posesFetchKeyRef.current = null;
   }, [analysisId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!annotatedVideoPath) {
+      setVideoPhase("unavailable");
+      setMediaObjectUrl(null);
+      if (mediaUrlRef.current) {
+        URL.revokeObjectURL(mediaUrlRef.current);
+        mediaUrlRef.current = null;
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setVideoPhase("fetch_blob");
+    setMediaObjectUrl(null);
+    if (mediaUrlRef.current) {
+      URL.revokeObjectURL(mediaUrlRef.current);
+      mediaUrlRef.current = null;
+    }
+
+    void (async () => {
+      try {
+        const blob = await fetchAuthenticatedBlob(`/download/${encodeURIComponent(analysisId)}`);
+        if (cancelled) return;
+        const u = URL.createObjectURL(blob);
+        mediaUrlRef.current = u;
+        setMediaObjectUrl(u);
+        setVideoPhase("decode");
+      } catch {
+        if (!cancelled) setVideoPhase("error");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (mediaUrlRef.current) {
+        URL.revokeObjectURL(mediaUrlRef.current);
+        mediaUrlRef.current = null;
+      }
+    };
+  }, [analysisId, annotatedVideoPath]);
 
   useEffect(() => {
     if (hasApiCom) return;
@@ -161,7 +214,12 @@ export function VideoPanel({
     };
   }, [drawComOverlay, videoRef]);
 
-  const showCom = comSeries && comSeries.length > 0 && !videoError;
+  const showCom =
+    Boolean(annotatedVideoPath) &&
+    comSeries &&
+    comSeries.length > 0 &&
+    videoPhase === "ready" &&
+    Boolean(mediaObjectUrl);
 
   return (
     <section className="card">
@@ -174,12 +232,20 @@ export function VideoPanel({
         </p>
       )}
       <div ref={shellRef} className="video-shell video-shell--com">
-        {videoError ? (
+        {!annotatedVideoPath ? (
+          <div className="video-fallback">
+            <p className="video-fallback__text">{t("video.notStored")}</p>
+          </div>
+        ) : videoPhase === "error" ? (
           <div className="video-fallback">
             <p className="video-fallback__text">{t("video.fallback")}</p>
             <a className="link-button" href={downloadHref}>
               {t("video.openDownload")}
             </a>
+          </div>
+        ) : !mediaObjectUrl ? (
+          <div className="video-fallback video-fallback--loading">
+            <p className="video-fallback__text mono">{t("video.loading")}</p>
           </div>
         ) : (
           <>
@@ -188,10 +254,16 @@ export function VideoPanel({
               className="video-shell__el"
               controls
               playsInline
-              preload="metadata"
-              src={src}
-              onError={() => setVideoError(true)}
+              preload="auto"
+              src={mediaObjectUrl}
+              onLoadedMetadata={() => setVideoPhase("ready")}
+              onError={() => setVideoPhase("error")}
             />
+            {videoPhase === "decode" && (
+              <div className="video-fallback video-fallback--loading video-fallback--overlay" aria-busy>
+                <p className="video-fallback__text mono">{t("video.loading")}</p>
+              </div>
+            )}
             {showCom && (
               <canvas
                 ref={canvasRef}
@@ -204,9 +276,11 @@ export function VideoPanel({
         )}
       </div>
       {showCom && <p className="video-com__legend">{t("video.comLegend")}</p>}
-      <a className="link-button" href={downloadHref} download>
-        {t("video.downloadMp4")}
-      </a>
+      {annotatedVideoPath ? (
+        <a className="link-button" href={mediaObjectUrl ?? downloadHref} download="annotated.mp4">
+          {t("video.downloadMp4")}
+        </a>
+      ) : null}
     </section>
   );
 }
