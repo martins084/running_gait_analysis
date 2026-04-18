@@ -26,7 +26,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.ric_dataset import RICAnomalyDataset, SequenceSpec, collate_ric_anomaly
+from core.ric_dataset import (
+    RICAnomalyDataset,
+    SequenceSpec,
+    collate_ric_anomaly,
+    compute_max_feature_dim,
+)
 from models.gait_classifier import GaitAnomalyDetector
 
 
@@ -92,6 +97,25 @@ def main() -> None:
         normalize=str(cfg["data"].get("normalize", "zscore")),
         train_random_window=False,
     )
+
+    if args.device == "cpu":
+        device = torch.device("cpu")
+    elif args.device == "cuda":
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Single CPU load: need `input_size` before the dataset (variable marker counts per session).
+    ckpt = torch.load(args.checkpoint, map_location="cpu")
+    if "input_size" in ckpt:
+        input_size = int(ckpt["input_size"])
+    else:
+        input_size = compute_max_feature_dim(
+            ROOT / cfg["data"]["session_split_csv"],
+            ROOT / cfg["data"]["json_root"],
+            seq,
+        )
+
     dataset = RICAnomalyDataset(
         session_split_csv=ROOT / cfg["data"]["session_split_csv"],
         json_root=ROOT / cfg["data"]["json_root"],
@@ -99,6 +123,7 @@ def main() -> None:
         seq=seq,
         include_injured=True,
         seed=int(cfg["experiment"]["seed"]),
+        feature_dim=input_size,
     )
     loader = DataLoader(
         dataset,
@@ -108,15 +133,6 @@ def main() -> None:
         collate_fn=collate_ric_anomaly,
     )
 
-    if args.device == "cpu":
-        device = torch.device("cpu")
-    elif args.device == "cuda":
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    ckpt = torch.load(args.checkpoint, map_location=device)
-    input_size = int(ckpt.get("input_size", dataset.feature_dim))
     hidden_size = int(ckpt.get("hidden_size", cfg["train"].get("hidden_size", 128)))
     model = GaitAnomalyDetector(input_size=input_size, hidden_size=hidden_size).to(device)
     model.load_state_dict(ckpt["model_state"])

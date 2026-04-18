@@ -42,6 +42,78 @@ def _to_float_array(values: list) -> np.ndarray:
     return arr
 
 
+def compute_max_feature_dim(
+    session_split_csv: Path,
+    json_root: Path,
+    seq: SequenceSpec,
+) -> int:
+    """
+    Scan every session in the split CSV (all splits) and return the maximum
+    feature dimension (num_markers * 3) after mode selection.
+
+    Sessions differ in how many marker tracks exist; the model needs one fixed
+    input size, so we pad shorter sequences to this width.
+    """
+    session_split_csv = Path(session_split_csv)
+    json_root = Path(json_root)
+    rows: list[dict] = []
+    with open(session_split_csv, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError("Session split CSV has no header row.")
+        for r in reader:
+            rows.append(r)
+    if not rows:
+        raise ValueError("Session split CSV has no rows.")
+
+    def _json_path_from_row(row: dict) -> Path:
+        src = str(row["source_ref"]).replace("\\", "/")
+        if "reformat_data/" in src:
+            src = src.split("reformat_data/", 1)[1]
+        return json_root / src
+
+    def _select_mode_block(payload: dict) -> tuple[str, dict]:
+        run = payload.get("running") or {}
+        walk = payload.get("walking") or {}
+        if seq.prefer_mode == "run":
+            if run:
+                return "run", run
+            if walk:
+                return "walk", walk
+        elif seq.prefer_mode == "walk":
+            if walk:
+                return "walk", walk
+            if run:
+                return "run", run
+        else:
+            if run and walk:
+                run_len = len(next(iter(run.values()))) if run else 0
+                walk_len = len(next(iter(walk.values()))) if walk else 0
+                return ("run", run) if run_len >= walk_len else ("walk", walk)
+            if run:
+                return "run", run
+            if walk:
+                return "walk", walk
+        raise ValueError("JSON has no usable walking/running marker block.")
+
+    max_d = 0
+    for row in rows:
+        p = _json_path_from_row(row)
+        if not p.is_file():
+            continue
+        with open(p, encoding="utf-8") as f:
+            payload = json.load(f)
+        _mode, block = _select_mode_block(payload)
+        if not block:
+            continue
+        d = len(block) * 3
+        if d > max_d:
+            max_d = d
+    if max_d <= 0:
+        raise RuntimeError("Could not infer max feature dimension (no valid JSON blocks).")
+    return max_d
+
+
 class RICAnomalyDataset(Dataset):
     """
     Sequence dataset for `GaitAnomalyDetector`.
@@ -64,6 +136,7 @@ class RICAnomalyDataset(Dataset):
         seq: SequenceSpec | None = None,
         include_injured: bool = True,
         seed: int = 42,
+        feature_dim: int | None = None,
     ) -> None:
         super().__init__()
         self.session_split_csv = Path(session_split_csv)
@@ -82,9 +155,11 @@ class RICAnomalyDataset(Dataset):
         if not self.rows:
             raise ValueError(f"No rows found for split={self.split} with include_injured={self.include_injured}")
 
-        # Infer feature dimension from first valid sample for model wiring.
-        first = self._load_sequence(self.rows[0])
-        self.feature_dim = int(first.shape[1])
+        # Sessions differ in marker count; pad/truncate to one canonical width for batching.
+        if feature_dim is None:
+            self.feature_dim = compute_max_feature_dim(self.session_split_csv, self.json_root, self.seq)
+        else:
+            self.feature_dim = int(feature_dim)
 
     def _load_rows(self) -> list[dict]:
         rows: list[dict] = []
@@ -166,6 +241,16 @@ class RICAnomalyDataset(Dataset):
         x = np.concatenate(clipped, axis=1)  # [T, M*3]
         return x.astype(np.float32, copy=False)
 
+    def _fit_feature_dim(self, x: np.ndarray) -> np.ndarray:
+        """Pad or truncate along feature axis to `self.feature_dim`."""
+        d = x.shape[1]
+        if d == self.feature_dim:
+            return x
+        if d < self.feature_dim:
+            pad = np.zeros((x.shape[0], self.feature_dim - d), dtype=np.float32)
+            return np.concatenate([x, pad], axis=1)
+        return x[:, : self.feature_dim]
+
     def _slice_window(self, x: np.ndarray) -> np.ndarray:
         t = x.shape[0]
         seq_len = self.seq.seq_len
@@ -198,6 +283,7 @@ class RICAnomalyDataset(Dataset):
             payload = json.load(f)
         mode, block = self._select_mode_block(payload)
         x = self._block_to_matrix(block)
+        x = self._fit_feature_dim(x)
         x = self._slice_window(x)
         x = self._normalize(x)
         row["_selected_mode"] = mode

@@ -31,7 +31,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.ric_dataset import RICAnomalyDataset, SequenceSpec, collate_ric_anomaly
+from core.ric_dataset import (
+    RICAnomalyDataset,
+    SequenceSpec,
+    collate_ric_anomaly,
+    compute_max_feature_dim,
+)
 from models.gait_classifier import GaitAnomalyDetector
 
 
@@ -96,6 +101,8 @@ def _build_loaders(cfg: dict, seed: int) -> tuple[DataLoader, DataLoader, int]:
         train_random_window=bool(d.get("train_random_window", True)),
     )
 
+    feat_dim = compute_max_feature_dim(ROOT / d["session_split_csv"], ROOT / d["json_root"], seq)
+
     train_ds = RICAnomalyDataset(
         session_split_csv=ROOT / d["session_split_csv"],
         json_root=ROOT / d["json_root"],
@@ -103,6 +110,7 @@ def _build_loaders(cfg: dict, seed: int) -> tuple[DataLoader, DataLoader, int]:
         seq=seq,
         include_injured=bool(d.get("train_include_injured", False)),
         seed=seed,
+        feature_dim=feat_dim,
     )
     val_ds = RICAnomalyDataset(
         session_split_csv=ROOT / d["session_split_csv"],
@@ -111,6 +119,7 @@ def _build_loaders(cfg: dict, seed: int) -> tuple[DataLoader, DataLoader, int]:
         seq=seq,
         include_injured=bool(d.get("val_include_injured", True)),
         seed=seed,
+        feature_dim=feat_dim,
     )
 
     train_loader = DataLoader(
@@ -129,7 +138,7 @@ def _build_loaders(cfg: dict, seed: int) -> tuple[DataLoader, DataLoader, int]:
         collate_fn=collate_ric_anomaly,
         drop_last=False,
     )
-    return train_loader, val_loader, train_ds.feature_dim
+    return train_loader, val_loader, feat_dim
 
 
 def _mse_per_sample(decoded: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
