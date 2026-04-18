@@ -1,8 +1,8 @@
-"""Core processing modules for the running gait analysis system."""
+"""Core processing modules for the running gait analysis system.
 
-from core.pose_detection import PoseDetector
-from core.feature_extractor import FeatureExtractor
-from core.gait_analyzer import GaitAnalyzer
-from core.video_processor import VideoProcessor
+Imports are not re-exported here on purpose: pulling in ``pose_detection`` /
+``feature_extractor`` etc. loads heavy optional deps (OpenCV, MediaPipe). Import
+what you need explicitly, e.g. ``from core.pose_detection import PoseDetector``.
+"""
 
-__all__ = ["PoseDetector", "FeatureExtractor", "GaitAnalyzer", "VideoProcessor"]
+__all__: list[str] = []
