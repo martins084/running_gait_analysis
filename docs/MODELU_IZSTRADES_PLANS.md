@@ -381,6 +381,8 @@ Svarīgi:
 3. Definēt `subject-level split` (train/val/test).
 4. Sagatavot pirmo baseline treniņa skriptu (CPU smoke test + GPU full run).
 
+**Statusa atjauninājums:** punkti 2–4 ir **īstenoti kodā** (manifesta un splitu ģeneratori, anomāliju treniņa/novērtēšanas skripti, konfigurācija). Detalizēts apraksts: §17.5. Pilnam GPU treniņam joprojām jāseko §18.
+
 ## 17) Progress žurnāls (izdarīts līdz šim)
 
 Šis ir īss “fakts -> rezultāts” žurnāls par jau paveikto, lai var izmantot bakalaura darba metodoloģijas aprakstā.
@@ -419,6 +421,70 @@ Svarīgi:
   - `running` sadaļa aizpildīta,
   - `walking` tukša (run-only sesija, kas ir sagaidāms šai datu kopai).
 
+### 17.5 Repozitorijā ieviestā anomāliju (RIC) priekš-GPU plūsma
+
+Lai bakalaura darbā var reproducējami aprakstīt ceļu no “raw JSON” līdz pirmajam treniņam, šeit fiksēts **faktiski implementētais** kods un faili (ne tikai plāns).
+
+**Manifests un spliti**
+
+- `scripts/build_ric_manifest.py` — skenē `reformat_data` struktūru (vai S3 prefiksu) un veido `data/processed/ric_manifest.csv` (+ summary JSON). Sesiju kopskaits praksē sakrīt ar publicēto kopkopu (~2506 sesijas pret ~1798 subjektiem).
+- `scripts/build_subject_splits.py` — **subjektu līmeņa** sadalījums train/val/test (noklusējums 70/15/15, determinēts ar `seed`), validācija pret **datu noplūdi** starp splitiem; izvades faili:
+  - `data/processed/splits/subject_split_v1.csv`
+  - `data/processed/splits/session_split_v1.csv` (katrai sesijai mantota subjekta split vērtība).
+
+**Datu ielāde un priekšapstrāde (metodoloģiski svarīgi)**
+
+- `core/ric_dataset.py` — `RICAnomalyDataset` + `SequenceSpec`:
+  - ieeja: lokāli JSON faili zem `json_root` (parasti `data/ric/reformat_data/...`), ceļš no manifesta `source_ref`;
+  - izvēle starp `running` / `walking` blokiem pēc `prefer_mode` (`run` | `walk` | `auto`);
+  - markeru vārdnīca → **deterministiska secība** (`sorted(marker_names)`), tad concatenate uz mātricu formā `[T, M·3]`;
+  - **logu garums** `seq_len` (konfigā, piem. `180`): treniņā nejauša loga pozīcija, validācijā/testā centrēts logs;
+  - **normalizācija**: loga ietvaros per-feature z-score (`normalize: zscore`).
+- **Heterogēns markeru skaits starp sesijām** (darbā jāpiemin kā metodoloģisks ierobežojums / risinājums):
+  - dažādās sesijās atšķiras `M`, tātad pēdējās dimensijas platums atšķiras;
+  - `compute_max_feature_dim(...)` nosaka globālo maksimumu `D_max = max_s(M_s·3)` pēc split CSV un JSON;
+  - katrā parauga pazīmes **tiek papildinātas ar nullēm** līdz `D_max`, garākas — **apgrieztas** līdz `D_max`, lai `DataLoader` varētu `stack` batch dimension;
+  - tas dod fiksētu `input_size` autoenkoderim visā eksperimentā.
+
+**Treniņš un novērtēšana**
+
+- `config/anomaly_train_v1.yaml` — datu ceļi (`session_split_csv`, `json_root`), `seq_len`, režīms, vai treniņā iekļaut `is_injured` (noklusējumā treniņš tikai uz “veseliem” — `train_include_injured: false`), validācijā iekļaut arī injured (`val_include_injured: true`), hipotēze: novelty uz “normālu” gaitu.
+- `scripts/train_anomaly.py` — `GaitAnomalyDetector` (LSTM encoder–decoder no `models/gait_classifier.py`), zaudējums = rekonstrukcijas MSE, AdamW, gradient clipping; saglabā `last.pt` / `best.pt`, metadatus (`run_metadata.json`, `epoch_metrics.csv`, `train_summary.json`) ar config hash un git commit, ja pieejams.
+- `scripts/evaluate_anomaly.py` — rekonstrukcijas kļūda kā skaits, kvantīļu slieksnis, AUROC/AUPRC (ja abas klases klāt); izvade: `metrics.json`, `thresholds.json`, `per_sample_scores.csv`; **novērtēšanā** `input_size` ielasīts no checkpoint, lai sakristu ar treniņu.
+
+**Palīgrīki un dokumentācija**
+
+- `scripts/pre_gpu_check.py` — “viss uz ceļa” pārbaudes skripts pirms dārgā GPU laika.
+- `scripts/sync_run_artifacts.py` — artefaktu sinhronizācija uz Spaces (dry-run režīms pārbaudāms pirms upload).
+- `docs/AMS3_PRE_GPU_RUNBOOK.md` — angliski, soli pa solim: manifests → spliti → CPU smoke train → eval → go/no-go.
+
+**Importu arhitektūra (lai CPU treniņš neprasītu OpenCV/MediaPipe)**
+
+- `core/__init__.py` — samazināts “eager” imports: `from core import ric_dataset` vairs nedzen iekšā `cv2` / `mediapipe`, kas citādi lauza vidi, kurā ir tikai PyTorch + datu bibliotēkas. Bakalaura darba tekstā var piebilst, ka pose pipeline un RIC kinemātikas pipeline ir **atdalīti moduļi**.
+
+### 17.6 DigitalOcean FRA CPU droplets: reālais izpildes konteksts (smoke treniņš)
+
+- Repozitorijs uz volume: `/mnt/volume_fra1_01/work/running_gait_analysis` (vai līdzīgs ceļš).
+- Vides Python: `python3` + projekta `.venv`; komandā izmantot `source .venv/bin/activate` vai tiešu `.venv/bin/python`.
+- Lielie JSON paliek uz volume: bieži izmanto **simbolisko saiti** `data/ric/reformat_data` → `/mnt/volume_fra1_01/reformat_data`, lai YAML ceļš paliktu relatīvs pret repozitoriju.
+- Metadatu CSV (Figshare / AMS `meta/`) var turēt lokāli zem `data/figshare/` vai lejupielādēt no `bakalaurs-ams`, lai būtu pieejami injury un citi lauki manifesta un splitu būvēšanā — atkarībā no tā, kā manifestu būvē.
+- **Ilgstoši procesi**: SSH sesijas var pārtraukt; treniņš jāpalaiž **`tmux` vai `screen`** sesijā, atslēgties ar `Ctrl+B`, tad `D`; pēc tam `tmux attach -t <vārds>`. Ieteicams `python -u` nebuferizētai izdrukai.
+- **Resursi**: 1 vCPU / 2 GB RAM — pilnam daudzu epoku treniņam tas ir lēns un OOM risks; smoke testam (`--epochs 1`) un metodikas validācijai tas ir pieņemami; pilnam eksperimentam paredzēts GPU (sk. §18).
+
+### 17.7 Versiju kontrole (nozīmīgi commit darba reproducējamībai)
+
+- `core/__init__.py` — samazināts smags imports, lai RIC pipeline darbotos “slim” vidē (piem., commit `34f2ada` uz `master`).
+- `core/ric_dataset.py` + `scripts/train_anomaly.py` + `scripts/evaluate_anomaly.py` — vienots `feature_dim` / `input_size` risinājums heterogēnam markeru skaitam (piem., commit `a4477a9` uz `master`).
+
+Precīzus hash ieteicams vienreiz pārbaudīt ar `git log -1` brīdī, kad raksti metodoloģijas nodaļu.
+
+### 17.8 Ko šo bloku tieši izmantot bakalaura darba tekstā
+
+- **Datu sadalījums**: subjektu līmenī, sesijas mantojumā — novērš identitātes noplūdi.
+- **Uzdevuma formulējums**: anomālija kā **augstas rekonstrukcijas kļūdas** novirze no autoenkodera, apmācīta uz izvēlētu “references” kopu (šeit: opcija bez injured treniņā).
+- **Tehniskā īpatnība datu kopai**: atšķirīgs optisko markeru skaits starp sesijām → fiksēta ieejas dimensija ar padding/truncate un globālo `D_max` — jāapraksta kā **pielāgošanās reālai MoCap heterogenitātei**, ne kā kļūda datu ielasē.
+- **Reproducējamība**: YAML + split CSV versija + `seed` + checkpoint ar `input_size` / `hidden_size`.
+
 ## 18) Latest status snapshot un nākamā izpildes fāze
 
 ### 18.1 Latest status snapshot (apstiprināts)
@@ -437,16 +503,17 @@ Svarīgi:
 
 ### 18.2 Immediate next actions (izpildes secība)
 
-1. Izveidot GPU droplet `ams3` reģionā ar **AI/ML-ready** image.
-2. Veikt GPU vides pārbaudi:
+1. **(Opcionāli, FRA CPU)** Validēt metodiku lokāli uz volume: repozitorijs + `ric_manifest.csv` / spliti + symlink uz `reformat_data`, tad `python scripts/train_anomaly.py --config config/anomaly_train_v1.yaml --epochs 1` iekš `tmux` (sk. §17.6). Tas **neaizstāj** GPU eksperimentu, bet dod reproducējamu “priekš-GPU” pierādījumu.
+2. Izveidot GPU droplet `ams3` reģionā ar **AI/ML-ready** image.
+3. Veikt GPU vides pārbaudi:
    - `nvidia-smi`
    - CUDA/PyTorch pieejamības tests.
-3. Palaist nelielu subset smoke test:
+4. Palaist nelielu subset smoke test:
    - datu ielāde no `s3://bakalaurs-ams/processed/reformat_data/`
    - 1–2 mini-batch treniņa soļi + checkpoint rakstīšana.
-4. Palaist pilno treniņu:
+5. Palaist pilno treniņu:
    - regulāra checkpoint/log rakstīšana uz AMS Spaces.
-5. Pēc treniņa:
+6. Pēc treniņa:
    - rezultātu metrikas/ploti,
    - dropleta apturēšana/iznīcināšana.
 
@@ -491,4 +558,14 @@ Obligātie gala artefakti:
 - treniņa konfigurācijas fails,
 - val/test metriku tabula,
 - galvenie grafiki (loss/accuracy/F1 vai atbilstošās metrikas).
+
+### 18.6 Priekš-GPU (CPU) treniņa artefakti lokālajā repozitorijā
+
+Pēc veiksmīga `scripts/train_anomaly.py` palaišanas (sk. `docs/AMS3_PRE_GPU_RUNBOOK.md`) parasti rodas:
+
+- `checkpoints/<run_id>/last.pt`, `best.pt` — checkpoint ar `model_state`, `input_size`, `hidden_size` u.c.;
+- `logs/<run_id>/run_metadata.json`, `epoch_metrics.csv` — konfigurācijas hash, sēkla, git commit, epoku metrikas;
+- `results/<run_id>/train_summary.json` — kopsavilkums.
+
+Novērtēšanai: `scripts/evaluate_anomaly.py` raksta `metrics.json`, `thresholds.json`, `per_sample_scores.csv` izvēlētajā `--output-dir`. Šos failus var citēt bakalaura darbā kā **pirmās pilnas plūsmas** (dati → split → modelis → metrika) pierādījumu pirms mērogošanas uz GPU.
 

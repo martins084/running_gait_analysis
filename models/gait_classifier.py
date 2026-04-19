@@ -63,5 +63,7 @@ class GaitAnomalyDetector(nn.Module):
         _, (h_n, c_n) = self.encoder_lstm(x)
         # Repeat hidden across time for a simple decode (expand to seq length)
         dec_in = h_n[-1].unsqueeze(1).expand(-1, x.size(1), -1)
-        decoded, _ = self.decoder_lstm(dec_in, (h_n, c_n))
+        # Do not pass encoder hidden state directly into decoder state:
+        # decoder hidden size is `input_size`, while encoder hidden is `hidden_size`.
+        decoded, _ = self.decoder_lstm(dec_in)
         return decoded, h_n[-1]
