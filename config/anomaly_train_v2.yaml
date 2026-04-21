@@ -1,0 +1,38 @@
+experiment:
+  name: anomaly_train_v2
+  seed: 42
+  run_id_prefix: ric-anom-v2
+
+data:
+  # Session split CSV created by scripts/build_subject_splits.py
+  session_split_csv: data/processed/splits/session_split_v1.csv
+  # Local directory containing reformat_data/<subject>/<session>.json
+  json_root: data/ric/reformat_data
+  seq_len: 180
+  prefer_mode: run
+  normalize: zscore
+  train_random_window: true
+  train_include_injured: false
+  val_include_injured: true
+
+model:
+  variant: v2
+  num_layers: 2
+  dropout: 0.2
+  bidirectional: true
+
+train:
+  batch_size: 16
+  num_workers: 4
+  epochs: 40
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  hidden_size: 256
+  grad_clip_norm: 1.0
+  loss: huber      # mse|huber
+  device: auto     # auto|cpu|cuda
+
+output:
+  checkpoints_dir: checkpoints
+  logs_dir: logs
+  results_dir: results

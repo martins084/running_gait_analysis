@@ -67,3 +67,93 @@ class GaitAnomalyDetector(nn.Module):
         # decoder hidden size is `input_size`, while encoder hidden is `hidden_size`.
         decoded, _ = self.decoder_lstm(dec_in)
         return decoded, h_n[-1]
+
+
+class GaitAnomalyDetectorV2(nn.Module):
+    """
+    Stronger anomaly model variant:
+    - Bidirectional multi-layer LSTM encoder
+    - Temporal attention over encoded sequence
+    - Decoder with residual connection to input
+    """
+
+    def __init__(
+        self,
+        input_size: int = 66,
+        hidden_size: int = 256,
+        num_layers: int = 2,
+        dropout: float = 0.2,
+        bidirectional: bool = True,
+    ) -> None:
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+        self.enc_out_dim = hidden_size * self.num_directions
+
+        self.encoder_lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=bidirectional,
+        )
+        self.attn_score = nn.Linear(self.enc_out_dim, 1)
+        self.context_proj = nn.Sequential(
+            nn.Linear(self.enc_out_dim, self.enc_out_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.decoder_lstm = nn.LSTM(
+            input_size=self.enc_out_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=bidirectional,
+        )
+        self.output_proj = nn.Linear(self.enc_out_dim, input_size)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        enc_seq, _ = self.encoder_lstm(x)  # [B, T, enc_out_dim]
+
+        # Attention over encoder time axis to build one global context vector.
+        attn_logits = self.attn_score(enc_seq).squeeze(-1)  # [B, T]
+        attn_w = torch.softmax(attn_logits, dim=1)
+        context = torch.sum(enc_seq * attn_w.unsqueeze(-1), dim=1)  # [B, enc_out_dim]
+        context = self.context_proj(context)
+
+        # Repeat context through time and decode sequence.
+        dec_in = context.unsqueeze(1).expand(-1, x.size(1), -1)
+        dec_seq, _ = self.decoder_lstm(dec_in)  # [B, T, enc_out_dim]
+        decoded = self.output_proj(dec_seq)  # [B, T, input_size]
+
+        # Residual skip keeps baseline identity mapping path available.
+        decoded = decoded + x
+        return decoded, context
+
+
+def build_anomaly_model(
+    variant: str,
+    input_size: int,
+    hidden_size: int,
+    num_layers: int = 2,
+    dropout: float = 0.2,
+    bidirectional: bool = True,
+) -> nn.Module:
+    """Factory for anomaly model variants used by train/eval scripts."""
+    v = (variant or "baseline").lower()
+    if v in {"baseline", "v1"}:
+        return GaitAnomalyDetector(input_size=input_size, hidden_size=hidden_size)
+    if v in {"v2", "advanced", "bilstm_attn"}:
+        return GaitAnomalyDetectorV2(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            bidirectional=bidirectional,
+        )
+    raise ValueError(f"Unknown anomaly model variant: {variant}")

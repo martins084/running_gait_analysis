@@ -37,7 +37,7 @@ from core.ric_dataset import (
     collate_ric_anomaly,
     compute_max_feature_dim,
 )
-from models.gait_classifier import GaitAnomalyDetector
+from models.gait_classifier import build_anomaly_model
 
 
 def _load_cfg(path: Path) -> dict:
@@ -146,12 +146,23 @@ def _mse_per_sample(decoded: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     return ((decoded - x) ** 2).mean(dim=(1, 2))
 
 
+def _recon_loss(decoded: torch.Tensor, x: torch.Tensor, loss_name: str) -> torch.Tensor:
+    """Configurable reconstruction loss for anomaly training."""
+    name = (loss_name or "mse").lower()
+    if name == "mse":
+        return ((decoded - x) ** 2).mean()
+    if name == "huber":
+        return torch.nn.functional.smooth_l1_loss(decoded, x)
+    raise ValueError(f"Unsupported train.loss: {loss_name}")
+
+
 def _run_epoch_train(
     model: nn.Module,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     grad_clip_norm: float,
+    loss_name: str,
 ) -> float:
     model.train()
     losses = []
@@ -159,7 +170,7 @@ def _run_epoch_train(
         x = batch["x"].to(device)
         optimizer.zero_grad(set_to_none=True)
         decoded, _ = model(x)
-        loss = ((decoded - x) ** 2).mean()
+        loss = _recon_loss(decoded, x, loss_name)
         loss.backward()
         if grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
@@ -222,10 +233,19 @@ def main() -> None:
 
     dirs = _ensure_dirs(cfg, run_id)
     tcfg = cfg["train"]
+    mcfg = cfg.get("model", {})
     device = _pick_device(str(tcfg.get("device", "auto")).lower())
 
     train_loader, val_loader, input_size = _build_loaders(cfg, seed=seed)
-    model = GaitAnomalyDetector(input_size=input_size, hidden_size=int(tcfg.get("hidden_size", 128))).to(device)
+    model_variant = str(mcfg.get("variant", "baseline"))
+    model = build_anomaly_model(
+        variant=model_variant,
+        input_size=input_size,
+        hidden_size=int(tcfg.get("hidden_size", 128)),
+        num_layers=int(mcfg.get("num_layers", 2)),
+        dropout=float(mcfg.get("dropout", 0.2)),
+        bidirectional=bool(mcfg.get("bidirectional", True)),
+    ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(tcfg["learning_rate"]),
@@ -243,6 +263,7 @@ def main() -> None:
 
     n_epochs = int(args.epochs) if args.epochs > 0 else int(tcfg["epochs"])
     grad_clip_norm = float(tcfg.get("grad_clip_norm", 0.0))
+    loss_name = str(tcfg.get("loss", "mse"))
     epoch_rows: list[dict] = []
 
     # Write run metadata before training starts.
@@ -255,12 +276,13 @@ def main() -> None:
         "git_commit": _git_commit(),
         "started_utc": ts,
         "data": cfg["data"],
+        "model": mcfg,
         "train": cfg["train"],
     }
     (dirs["logs"] / "run_metadata.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
 
     for epoch in range(start_epoch, n_epochs + 1):
-        train_loss = _run_epoch_train(model, train_loader, optimizer, device, grad_clip_norm)
+        train_loss = _run_epoch_train(model, train_loader, optimizer, device, grad_clip_norm, loss_name)
         val_metrics = _run_epoch_val(model, val_loader, device)
         val_loss = float(val_metrics["val_loss"])
         val_auroc = float(val_metrics["val_auroc"])
@@ -283,6 +305,10 @@ def main() -> None:
             "config_hash": cfg_hash,
             "input_size": input_size,
             "hidden_size": int(tcfg.get("hidden_size", 128)),
+            "model_variant": model_variant,
+            "model_num_layers": int(mcfg.get("num_layers", 2)),
+            "model_dropout": float(mcfg.get("dropout", 0.2)),
+            "model_bidirectional": bool(mcfg.get("bidirectional", True)),
         }
         torch.save(ckpt_payload, dirs["checkpoints"] / "last.pt")
         if val_loss < best_val:

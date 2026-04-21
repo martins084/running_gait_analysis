@@ -32,7 +32,7 @@ from core.ric_dataset import (
     collate_ric_anomaly,
     compute_max_feature_dim,
 )
-from models.gait_classifier import GaitAnomalyDetector
+from models.gait_classifier import build_anomaly_model
 
 
 def _load_cfg(path: Path) -> dict:
@@ -134,7 +134,19 @@ def main() -> None:
     )
 
     hidden_size = int(ckpt.get("hidden_size", cfg["train"].get("hidden_size", 128)))
-    model = GaitAnomalyDetector(input_size=input_size, hidden_size=hidden_size).to(device)
+    mcfg = cfg.get("model", {})
+    model_variant = str(ckpt.get("model_variant", mcfg.get("variant", "baseline")))
+    model_num_layers = int(ckpt.get("model_num_layers", mcfg.get("num_layers", 2)))
+    model_dropout = float(ckpt.get("model_dropout", mcfg.get("dropout", 0.2)))
+    model_bidirectional = bool(ckpt.get("model_bidirectional", mcfg.get("bidirectional", True)))
+    model = build_anomaly_model(
+        variant=model_variant,
+        input_size=input_size,
+        hidden_size=hidden_size,
+        num_layers=model_num_layers,
+        dropout=model_dropout,
+        bidirectional=model_bidirectional,
+    ).to(device)
     model.load_state_dict(ckpt["model_state"])
 
     coll = _collect_scores(model, loader, device)
