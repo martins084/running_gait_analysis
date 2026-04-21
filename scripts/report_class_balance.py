@@ -52,6 +52,7 @@ def main() -> None:
         rows = by_split.get(split, [])
         n = len(rows)
         inj = sum(1 for r in rows if _int(r.get("is_injured")) == 1)
+        healthy = n - inj
         # One subject can have multiple sessions; mark positive if any session is injured.
         by_sub: dict[str, int] = {}
         for r in rows:
@@ -62,25 +63,35 @@ def main() -> None:
             by_sub[sid] = max(by_sub.get(sid, 0), v)
         n_subj = len(by_sub)
         subj_pos = sum(1 for v in by_sub.values() if v == 1)
+        subj_ok = n_subj - subj_pos
         out[split] = {
             "sessions_total": n,
-            "sessions_injured": inj,
-            "session_injured_rate": (inj / n) if n else 0.0,
+            "sessions_is_injured_1": inj,
+            "sessions_is_injured_0": healthy,
+            "session_rate_is_injured_1": (inj / n) if n else 0.0,
             "subjects_total": n_subj,
-            "subjects_any_injured": subj_pos,
-            "subject_injured_rate": (subj_pos / n_subj) if n_subj else 0.0,
+            "subjects_any_is_injured_1": subj_pos,
+            "subjects_all_is_injured_0": subj_ok,
+            "subject_rate_any_is_injured_1": (subj_pos / n_subj) if n_subj else 0.0,
         }
 
     if args.json:
         print(json.dumps(out, indent=2))
     else:
+        print(
+            "Column is_injured comes from build_ric_manifest._injury_flag: "
+            "1 unless metadata explicitly matches 'no injury' (conservative default → many rows are 1).",
+            file=sys.stderr,
+        )
         for split in ("train", "val", "test"):
             s = out[split]
+            r1 = 100 * float(s["session_rate_is_injured_1"])
+            rs1 = 100 * float(s["subject_rate_any_is_injured_1"])
             print(
-                f"{split:5s}  sessions: {s['sessions_injured']}/{s['sessions_total']} "
-                f"({100 * float(s['session_injured_rate']):.1f}% injured) | "
-                f"subjects: {s['subjects_any_injured']}/{s['subjects_total']} "
-                f"({100 * float(s['subject_injured_rate']):.1f}%)"
+                f"{split:5s}  sessions: is_injured=0: {s['sessions_is_injured_0']} | "
+                f"is_injured=1: {s['sessions_is_injured_1']} / {s['sessions_total']} "
+                f"({r1:.1f}% with label 1) | "
+                f"subjects (any session=1): {s['subjects_any_is_injured_1']} / {s['subjects_total']} ({rs1:.1f}%)"
             )
 
 
