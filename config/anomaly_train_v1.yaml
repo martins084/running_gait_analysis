@@ -14,6 +14,8 @@ data:
   train_random_window: true
   train_include_injured: false
   val_include_injured: true
+  # none: raw marker XYZ (padded). motion_stats: append per-frame |v|,|a|,|j| of the full pose.
+  feature_engineering: none
 
 train:
   batch_size: 16
@@ -24,6 +26,11 @@ train:
   hidden_size: 128
   grad_clip_norm: 1.0
   device: auto   # auto|cpu|cuda
+  # only used when data.train_include_injured is true: balance reconstruction loss like sklearn class_weight.
+  # none | balanced | inverse
+  recon_class_weight: none
+  # if true, same as data.train_include_injured: resample sessions so hurt vs healthy batches less skewed
+  oversample_train_injured: false
 
 output:
   checkpoints_dir: checkpoints

@@ -26,6 +26,8 @@ class SequenceSpec:
     prefer_mode: str = "run"  # run|walk|auto
     normalize: str = "zscore"  # zscore|none
     train_random_window: bool = True
+    # none: marker coordinates only. motion_stats: append per-timestep |v|,|a|,|j| of the pose (finite differences).
+    feature_engineering: str = "none"  # none|motion_stats
 
 
 def _to_int(v: object, default: int = 0) -> int:
@@ -33,6 +35,32 @@ def _to_int(v: object, default: int = 0) -> int:
         return int(str(v))
     except (TypeError, ValueError):
         return default
+
+
+def _motion_stats_extra_channels() -> int:
+    """Number of features appended for `motion_stats` (velocity / accel / jerk magnitudes)."""
+    return 3
+
+
+def _append_motion_stats(x: np.ndarray) -> np.ndarray:
+    """
+    Add simple biomechanical proxies on top of per-marker XYZ stacked as [T, F].
+
+    We use finite-difference velocity / acceleration / jerk of the *full* pose vector, then
+    L2 norm per time step. This is rotation-invariant to marker ordering and captures “smoothness”
+    without hand-designed joint names (still a shallow signal compared to true joint angles).
+    """
+    t, f = x.shape
+    if t < 2:
+        raise ValueError("Sequence too short for motion statistics.")
+    z = np.zeros((1, f), dtype=np.float32)
+    v = np.vstack([z, np.diff(x, axis=0)]).astype(np.float32, copy=False)
+    a = np.vstack([z, np.diff(v, axis=0)]).astype(np.float32, copy=False)
+    j = np.vstack([z, np.diff(a, axis=0)]).astype(np.float32, copy=False)
+    vel = np.linalg.norm(v, axis=1, keepdims=True)
+    acc = np.linalg.norm(a, axis=1, keepdims=True)
+    jerk = np.linalg.norm(j, axis=1, keepdims=True)
+    return np.concatenate([x, vel, acc, jerk], axis=1).astype(np.float32, copy=False)
 
 
 def _to_float_array(values: list) -> np.ndarray:
@@ -156,10 +184,20 @@ class RICAnomalyDataset(Dataset):
             raise ValueError(f"No rows found for split={self.split} with include_injured={self.include_injured}")
 
         # Sessions differ in marker count; pad/truncate to one canonical width for batching.
+        fe = (self.seq.feature_engineering or "none").lower()
+        self.extra_channels = _motion_stats_extra_channels() if fe == "motion_stats" else 0
+        if fe not in ("none", "motion_stats"):
+            raise ValueError("SequenceSpec.feature_engineering must be 'none' or 'motion_stats'")
+
         if feature_dim is None:
-            self.feature_dim = compute_max_feature_dim(self.session_split_csv, self.json_root, self.seq)
+            # Base width: marker coords only (padding marker axis). Motion channels are added after the window.
+            self.marker_feature_dim = compute_max_feature_dim(self.session_split_csv, self.json_root, self.seq)
+            self.feature_dim = int(self.marker_feature_dim + self.extra_channels)
         else:
             self.feature_dim = int(feature_dim)
+            self.marker_feature_dim = int(self.feature_dim - self.extra_channels)
+            if self.marker_feature_dim < 1:
+                raise ValueError("feature_dim is smaller than the motion_stats channel budget.")
 
     def _load_rows(self) -> list[dict]:
         rows: list[dict] = []
@@ -242,14 +280,15 @@ class RICAnomalyDataset(Dataset):
         return x.astype(np.float32, copy=False)
 
     def _fit_feature_dim(self, x: np.ndarray) -> np.ndarray:
-        """Pad or truncate along feature axis to `self.feature_dim`."""
+        """Pad or truncate marker block to a uniform width (`marker_feature_dim`)."""
         d = x.shape[1]
-        if d == self.feature_dim:
+        t = self.marker_feature_dim
+        if d == t:
             return x
-        if d < self.feature_dim:
-            pad = np.zeros((x.shape[0], self.feature_dim - d), dtype=np.float32)
+        if d < t:
+            pad = np.zeros((x.shape[0], t - d), dtype=np.float32)
             return np.concatenate([x, pad], axis=1)
-        return x[:, : self.feature_dim]
+        return x[:, :t]
 
     def _slice_window(self, x: np.ndarray) -> np.ndarray:
         t = x.shape[0]
@@ -285,6 +324,12 @@ class RICAnomalyDataset(Dataset):
         x = self._block_to_matrix(block)
         x = self._fit_feature_dim(x)
         x = self._slice_window(x)
+        if self.extra_channels:
+            x = _append_motion_stats(x)
+            if x.shape[1] != self.feature_dim:
+                raise RuntimeError(
+                    f"Feature width mismatch: expected {self.feature_dim} with motion stats, got {x.shape[1]}"
+                )
         x = self._normalize(x)
         row["_selected_mode"] = mode
         return x

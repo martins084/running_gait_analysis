@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 from core.ric_dataset import (
     RICAnomalyDataset,
     SequenceSpec,
+    _motion_stats_extra_channels,
     collate_ric_anomaly,
     compute_max_feature_dim,
 )
@@ -91,11 +92,13 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = _load_cfg(args.config)
+    fe = str(cfg["data"].get("feature_engineering", "none")).lower()
     seq = SequenceSpec(
         seq_len=int(cfg["data"]["seq_len"]),
         prefer_mode=str(cfg["data"].get("prefer_mode", "run")),
         normalize=str(cfg["data"].get("normalize", "zscore")),
         train_random_window=False,
+        feature_engineering=fe,
     )
 
     if args.device == "cpu":
@@ -110,11 +113,12 @@ def main() -> None:
     if "input_size" in ckpt:
         input_size = int(ckpt["input_size"])
     else:
-        input_size = compute_max_feature_dim(
+        base = compute_max_feature_dim(
             ROOT / cfg["data"]["session_split_csv"],
             ROOT / cfg["data"]["json_root"],
             seq,
         )
+        input_size = int(base + (_motion_stats_extra_channels() if fe == "motion_stats" else 0))
 
     dataset = RICAnomalyDataset(
         session_split_csv=ROOT / cfg["data"]["session_split_csv"],

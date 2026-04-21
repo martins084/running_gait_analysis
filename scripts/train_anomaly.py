@@ -34,9 +34,11 @@ if str(ROOT) not in sys.path:
 from core.ric_dataset import (
     RICAnomalyDataset,
     SequenceSpec,
+    _motion_stats_extra_channels,
     collate_ric_anomaly,
     compute_max_feature_dim,
 )
+from torch.utils.data import WeightedRandomSampler
 from models.gait_classifier import build_anomaly_model
 
 
@@ -91,17 +93,25 @@ def _ensure_dirs(cfg: dict, run_id: str) -> dict[str, Path]:
     return {"checkpoints": ckpt, "logs": logs, "results": results}
 
 
-def _build_loaders(cfg: dict, seed: int) -> tuple[DataLoader, DataLoader, int]:
+def _build_loaders(
+    cfg: dict, seed: int
+) -> tuple[DataLoader, DataLoader, int, str, torch.Tensor | None, dict[str, float | int]]:
     d = cfg["data"]
     t = cfg["train"]
+    fe = str(d.get("feature_engineering", "none")).lower()
     seq = SequenceSpec(
         seq_len=int(d["seq_len"]),
         prefer_mode=str(d.get("prefer_mode", "run")),
         normalize=str(d.get("normalize", "zscore")),
         train_random_window=bool(d.get("train_random_window", True)),
+        feature_engineering=fe,
     )
 
-    feat_dim = compute_max_feature_dim(ROOT / d["session_split_csv"], ROOT / d["json_root"], seq)
+    base_dim = compute_max_feature_dim(ROOT / d["session_split_csv"], ROOT / d["json_root"], seq)
+    if fe == "motion_stats":
+        feat_dim = int(base_dim + _motion_stats_extra_channels())
+    else:
+        feat_dim = int(base_dim)
 
     train_ds = RICAnomalyDataset(
         session_split_csv=ROOT / d["session_split_csv"],
@@ -122,10 +132,32 @@ def _build_loaders(cfg: dict, seed: int) -> tuple[DataLoader, DataLoader, int]:
         feature_dim=feat_dim,
     )
 
+    # Optional oversampling: only meaningful when the training set contains both classes.
+    train_sampler: WeightedRandomSampler | None = None
+    if bool(t.get("oversample_train_injured", False)) and bool(d.get("train_include_injured", False)):
+        ys = [int(r.get("is_injured", 0) or 0) for r in train_ds.rows]
+        n0 = max(1, sum(1 for y in ys if y == 0))
+        n1 = max(1, sum(1 for y in ys if y == 1))
+        w0 = 1.0 / n0
+        w1 = 1.0 / n1
+        weights = [w0 if y == 0 else w1 for y in ys]
+        train_sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    # sklearn-style class-balanced weights: n / (2 * n_c) for binary (used in weighted loss, not the sampler).
+    w_policy = str(t.get("recon_class_weight", "none")).lower()
+    n0 = n1 = 0
+    class_w: dict[str, float | int] = {}
+    if w_policy in ("balanced", "inverse") and bool(d.get("train_include_injured", False)):
+        ys = [int(r.get("is_injured", 0) or 0) for r in train_ds.rows]
+        n0 = sum(1 for y in ys if y == 0)
+        n1 = sum(1 for y in ys if y == 1)
+        class_w = {"n_healthy_sessions": n0, "n_injured_sessions": n1}
+
+    train_shuffle = train_sampler is None
     train_loader = DataLoader(
         train_ds,
         batch_size=int(t["batch_size"]),
-        shuffle=True,
+        shuffle=train_shuffle,
+        sampler=train_sampler,
         num_workers=int(t["num_workers"]),
         collate_fn=collate_ric_anomaly,
         drop_last=False,
@@ -138,7 +170,17 @@ def _build_loaders(cfg: dict, seed: int) -> tuple[DataLoader, DataLoader, int]:
         collate_fn=collate_ric_anomaly,
         drop_last=False,
     )
-    return train_loader, val_loader, feat_dim
+    # class_weight tensor: index 0->weight healthy, 1->weight injured; None if not used
+    cwt: torch.Tensor | None = None
+    if w_policy == "balanced" and n0 + n1 > 0 and n0 > 0 and n1 > 0:
+        n = float(n0 + n1)
+        cwt = torch.tensor(
+            [n / (2.0 * n0), n / (2.0 * n1)], dtype=torch.float32
+        )  # per sklearn balanced
+    elif w_policy == "inverse" and n0 > 0 and n1 > 0:
+        cwt = torch.tensor([1.0, float(n0) / float(n1)], dtype=torch.float32)  # injured gets n0/n1
+
+    return train_loader, val_loader, feat_dim, w_policy, cwt, class_w
 
 
 def _mse_per_sample(decoded: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -146,14 +188,32 @@ def _mse_per_sample(decoded: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     return ((decoded - x) ** 2).mean(dim=(1, 2))
 
 
-def _recon_loss(decoded: torch.Tensor, x: torch.Tensor, loss_name: str) -> torch.Tensor:
-    """Configurable reconstruction loss for anomaly training."""
+def _recon_loss(
+    decoded: torch.Tensor,
+    x: torch.Tensor,
+    loss_name: str,
+    sample_weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Reconstruction loss for the autoencoder.
+
+    When `sample_weight` is set (session-level), it implements a class-frequency reweighting
+    analogous to `pos_weight` in BCE: only used if you train with injured sessions included
+    (`train_include_injured: true`). It does not apply to the default healthy-only training.
+    """
     name = (loss_name or "mse").lower()
     if name == "mse":
-        return ((decoded - x) ** 2).mean()
-    if name == "huber":
-        return torch.nn.functional.smooth_l1_loss(decoded, x)
-    raise ValueError(f"Unsupported train.loss: {loss_name}")
+        err = (decoded - x) ** 2
+        per = err.mean(dim=(1, 2))
+    elif name == "huber":
+        err = torch.nn.functional.smooth_l1_loss(decoded, x, reduction="none")
+        per = err.mean(dim=(1, 2))
+    else:
+        raise ValueError(f"Unsupported train.loss: {loss_name}")
+    if sample_weight is None:
+        return per.mean()
+    sw = sample_weight.to(per.device)
+    return (per * sw).sum() / sw.sum().clamp_min(1e-8)
 
 
 def _run_epoch_train(
@@ -163,14 +223,19 @@ def _run_epoch_train(
     device: torch.device,
     grad_clip_norm: float,
     loss_name: str,
+    class_weight_tensor: torch.Tensor | None,
 ) -> float:
     model.train()
     losses = []
     for batch in loader:
         x = batch["x"].to(device)
+        y = batch["is_injured"].to(device)
         optimizer.zero_grad(set_to_none=True)
         decoded, _ = model(x)
-        loss = _recon_loss(decoded, x, loss_name)
+        sw = None
+        if class_weight_tensor is not None:
+            sw = class_weight_tensor[y]
+        loss = _recon_loss(decoded, x, loss_name, sw)
         loss.backward()
         if grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
@@ -236,7 +301,7 @@ def main() -> None:
     mcfg = cfg.get("model", {})
     device = _pick_device(str(tcfg.get("device", "auto")).lower())
 
-    train_loader, val_loader, input_size = _build_loaders(cfg, seed=seed)
+    train_loader, val_loader, input_size, _wpol, class_w_tensor, class_w_meta = _build_loaders(cfg, seed=seed)
     model_variant = str(mcfg.get("variant", "baseline"))
     model = build_anomaly_model(
         variant=model_variant,
@@ -278,11 +343,14 @@ def main() -> None:
         "data": cfg["data"],
         "model": mcfg,
         "train": cfg["train"],
+        "class_balance_train": class_w_meta,
     }
     (dirs["logs"] / "run_metadata.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
 
     for epoch in range(start_epoch, n_epochs + 1):
-        train_loss = _run_epoch_train(model, train_loader, optimizer, device, grad_clip_norm, loss_name)
+        train_loss = _run_epoch_train(
+            model, train_loader, optimizer, device, grad_clip_norm, loss_name, class_w_tensor
+        )
         val_metrics = _run_epoch_val(model, val_loader, device)
         val_loss = float(val_metrics["val_loss"])
         val_auroc = float(val_metrics["val_auroc"])
