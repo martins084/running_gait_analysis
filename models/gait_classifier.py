@@ -74,7 +74,7 @@ class GaitAnomalyDetectorV2(nn.Module):
     Stronger anomaly model variant:
     - Bidirectional multi-layer LSTM encoder
     - Temporal attention over encoded sequence
-    - Decoder with residual connection to input
+    - Decoder without direct input skip, to avoid identity shortcut collapse
     """
 
     def __init__(
@@ -131,8 +131,6 @@ class GaitAnomalyDetectorV2(nn.Module):
         dec_seq, _ = self.decoder_lstm(dec_in)  # [B, T, enc_out_dim]
         decoded = self.output_proj(dec_seq)  # [B, T, input_size]
 
-        # Residual skip keeps baseline identity mapping path available.
-        decoded = decoded + x
         return decoded, context
 
 
