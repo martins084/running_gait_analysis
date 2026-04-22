@@ -43,7 +43,7 @@ def _to_int(v: object, default: int = 0) -> int:
         return default
 
 
-def _subject_injury_labels(session_rows: list[dict]) -> dict[str, int]:
+def _subject_injury_labels(session_rows: list[dict], label_col: str) -> dict[str, int]:
     """
     One label per subject: 1 if any session is marked injured, else 0.
     Used for stratified splitting so train/val/test keep similar injury prevalence.
@@ -51,7 +51,7 @@ def _subject_injury_labels(session_rows: list[dict]) -> dict[str, int]:
     out: dict[str, int] = {}
     for r in session_rows:
         sid = r["subject_id"]
-        inj = _to_int(r.get("is_injured"), 0)
+        inj = _to_int(r.get(label_col), 0)
         out[sid] = max(out.get(sid, 0), inj)
     return out
 
@@ -214,6 +214,11 @@ def main() -> None:
         action="store_true",
         help="Stratify subject split by injury (requires is_injured in manifest; subject positive if any session is injured).",
     )
+    parser.add_argument(
+        "--label-col",
+        default="is_injured",
+        help="Label column used for stratify and rate reporting (e.g. is_injured, is_injured_strict).",
+    )
     args = parser.parse_args()
 
     if not (0 < args.train_ratio < 1 and 0 <= args.val_ratio < 1 and (args.train_ratio + args.val_ratio) < 1):
@@ -222,7 +227,7 @@ def main() -> None:
 
     rows = _read_manifest(args.manifest_csv)
     if args.stratify:
-        y_by_subj = _subject_injury_labels(rows)
+        y_by_subj = _subject_injury_labels(rows, label_col=args.label_col)
         split_map = _assign_subject_splits_stratified(
             [r["subject_id"] for r in rows],
             y_by_subj,
@@ -251,7 +256,7 @@ def main() -> None:
     # Session-level injury rates per split (for sanity-checking stratify).
     def _rate(split_name: str) -> tuple[int, int, float]:
         sess = [r for r in rows if split_map.get(r["subject_id"]) == split_name]
-        inj = sum(_to_int(r.get("is_injured"), 0) for r in sess)
+        inj = sum(_to_int(r.get(args.label_col), 0) for r in sess)
         tot = len(sess)
         return inj, tot, (inj / tot) if tot else 0.0
 
@@ -263,7 +268,7 @@ def main() -> None:
     print(f"Subject split counts -> train={c_train}, val={c_val}, test={c_test}")
     if args.stratify:
         print(
-            f"Injured session rate: train {t_inj}/{t_n}={t_r:.1%} | "
+            f"Label({args.label_col}) session rate: train {t_inj}/{t_n}={t_r:.1%} | "
             f"val {v_inj}/{v_n}={v_r:.1%} | test {e_inj}/{e_n}={e_r:.1%}"
         )
     print(f"Subject split CSV: {args.output_subject_split}")

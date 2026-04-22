@@ -35,6 +35,11 @@ def main() -> None:
         default=ROOT / "data" / "processed" / "splits" / "session_split_v1.csv",
         help="Session split CSV (must include is_injured, split, subject_id).",
     )
+    p.add_argument(
+        "--label-col",
+        default="is_injured",
+        help="Label column to summarize (e.g. is_injured or is_injured_strict).",
+    )
     p.add_argument("--json", action="store_true", help="Print one JSON object instead of text lines.")
     args = p.parse_args()
 
@@ -48,10 +53,11 @@ def main() -> None:
             by_split[str(r.get("split", ""))].append(r)
 
     out: dict[str, object] = {}
+    lab = str(args.label_col)
     for split in ("train", "val", "test"):
         rows = by_split.get(split, [])
         n = len(rows)
-        inj = sum(1 for r in rows if _int(r.get("is_injured")) == 1)
+        inj = sum(1 for r in rows if _int(r.get(lab)) == 1)
         healthy = n - inj
         # One subject can have multiple sessions; mark positive if any session is injured.
         by_sub: dict[str, int] = {}
@@ -59,7 +65,7 @@ def main() -> None:
             sid = str(r.get("subject_id", ""))
             if not sid:
                 continue
-            v = _int(r.get("is_injured"))
+            v = _int(r.get(lab))
             by_sub[sid] = max(by_sub.get(sid, 0), v)
         n_subj = len(by_sub)
         subj_pos = sum(1 for v in by_sub.values() if v == 1)
@@ -83,6 +89,7 @@ def main() -> None:
             "1 unless metadata explicitly matches 'no injury' (conservative default → many rows are 1).",
             file=sys.stderr,
         )
+        print(f"Using label column: {lab}", file=sys.stderr)
         for split in ("train", "val", "test"):
             s = out[split]
             r1 = 100 * float(s["session_rate_is_injured_1"])

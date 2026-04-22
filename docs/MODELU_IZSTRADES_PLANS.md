@@ -569,3 +569,219 @@ Pēc veiksmīga `scripts/train_anomaly.py` palaišanas (sk. `docs/AMS3_PRE_GPU_R
 
 Novērtēšanai: `scripts/evaluate_anomaly.py` raksta `metrics.json`, `thresholds.json`, `per_sample_scores.csv` izvēlētajā `--output-dir`. Šos failus var citēt bakalaura darbā kā **pirmās pilnas plūsmas** (dati → split → modelis → metrika) pierādījumu pirms mērogošanas uz GPU.
 
+### 18.7 GPU droplet — infrastruktūras un Python vides progress (atjaunināts: 2026-04-20)
+
+Šī apakšsadaļa fiksē **faktiski izpildītos** soļus uz GPU dropleta (`ml-ai-ubuntu-gpu-h100x1-80gb-ams3`, reģions `ams3`), lai repozitorijs būtu klonēts, atkarības uzstādītas un testu komplekts zaļš — kā priekšnoteikums turpmākiem GPU eksperimentiem (sk. §18.2–18.3).
+
+#### Repozitorija piekļuve (SSH / GitHub Deploy Key)
+
+- Sākotnēji deploy key pāra **privātā atslēga bija pazaudēta** (bija tikai `.pub` fails); GitHub deploy key tika **aizstāts** ar jaunu pāri.
+- Uz dropleta ģenerēta jauna atslēga: `~/.ssh/github_deploy` (+ `.pub`).
+- Publiskā atslēga pievienota repozitorijam: **Settings → Deploy keys** (vecā, “ātrā” atslēga noņemta).
+- `~/.ssh/config` iestatīts `Host github.com` ar `IdentityFile ~/.ssh/github_deploy` un `IdentitiesOnly yes`.
+- Veiksmīgs kloņojums:
+
+  `git clone git@github.com:martins084/running_gait_analysis.git`
+
+  (piezīme: placeholder `YOUR_USER` clone URL dod kļūdu *Repository not found* — jāizmanto īstais `owner/repo`.)
+
+#### Aparatūra un draiveri
+
+- `nvidia-smi`: **NVIDIA H100 80GB HBM3**, draiveris **590.48.01**, ziņotā *CUDA Version* **13.1** (maks. CUDA, ko draiveris atbalsta; pilns CUDA toolkit sistēmā nav obligāts PyTorch riteņiem).
+- GPU brīvs testa laikā (nav konkurentu procesu).
+
+#### Python un virtuālā vide
+
+- Sistēmas Python: **3.10.12**.
+- Uzstādīts: `python3-pip`, `python3-venv` (caur `apt`, `DEBIAN_FRONTEND=noninteractive`, ja jāizvairās no interaktīviem apt dialogiem).
+- Projekta katalogā: `python3 -m venv .venv`, aktivizācija: `source .venv/bin/activate`.
+- `pip` jaunināts līdz **26.0.1** iekš venv.
+
+#### PyTorch (GPU) un atkarības
+
+- PyTorch uzstādīts no oficiālā indeksa ar **CUDA 12.4** riteņiem:
+
+  `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124`
+
+- Faktiski uzstādīts: **torch 2.6.0+cu124**, **torchvision 0.21.0+cu124** (ar NVIDIA CUDA 12.4 bibliotēkām caur pip).
+- Pārbaude:
+
+  `python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"`
+
+  → `cuda True`, ierīce **NVIDIA H100 80GB HBM3**.
+
+- Pēc tam: `pip install -r requirements.txt`; `pip check` → **nav salauztu atkarību**.
+
+#### Testēšanai papildus (nav `requirements.txt`)
+
+- `fastapi.testclient` (Starlette) prasa **`httpx`**: `pip install httpx` (citādi pytest kolekcijas kļūda).
+
+#### Sistēmas bibliotēkas MediaPipe (headless serveris)
+
+- Kļūda: `OSError: libGLESv2.so.2: cannot open shared object file` ielādējot `libmediapipe.so`.
+- Risinājums (Ubuntu, kā root): `apt-get install -y libgles2 libegl1` (OpenGL ES / EGL, tipiski trūkst minimālā servera image).
+- Pēc tam `tests/test_pose_detection.py` un pilnais `pytest` zaļš.
+
+#### Pytest kopsavilkums
+
+- `pytest -q` (projekta sakne, ar aktivizētu `.venv`): **50 passed**.
+- Brīdinājumi (ne kļūdas): FastAPI `@app.on_event("startup"/"shutdown")` ir novecojis — ieteicams migrēt uz **lifespan** (sk. FastAPI dokumentāciju); nākotnē var izslēgt šos deprecation brīdinājumus refaktorējot `api/app.py`.
+
+#### Īsā atgādinājuma komandas (atkārtošanai uz jauna sesijas)
+
+```bash
+cd ~/running_gait_analysis
+source .venv/bin/activate
+git pull
+pytest -q
+```
+
+### 18.8 GPU droplets — datu sagatavošana un treniņa progress (atjaunināts: 2026-04-20)
+
+Šī apakšsadaļa fiksē **faktiski izpildītos** soļus pēc §18.7, līdz brīdim, kad uz **H100 AMS3** ir lokāli pieejami **tie paši** RIC dati un spliti, kas nepieciešami `config/anomaly_train_v1.yaml`, un ir sākts pirmais **GPU smoke** treniņš.
+
+#### AWS CLI un Spaces piekļuve
+
+- Uzstādīts: `awscli` (`apt install awscli`), pārbaudīta versija (piem., `aws-cli/1.22.x`).
+- **Sākotnēja kļūda:** `Unable to locate credentials` — atrisināts ar `aws configure`, izmantojot DigitalOcean **Spaces** atslēgu pāri (Access Key + **Secret** redzams tikai jaunas atslēgas izveides brīdī; vecā secret nav atjaunojama).
+- Endpoint komandām: `--endpoint-url https://ams3.digitaloceanspaces.com` (bucket `bakalaurs-ams`, reģions `ams3`).
+
+#### Metadatu un manifesta ģenerēšana
+
+- Lejupielādēti lokāli:
+  - `data/figshare/run_data_meta.csv`
+  - `data/figshare/walk_data_meta.csv`
+  - no `s3://bakalaurs-ams/meta/` (izmanto `aws s3 cp ...`).
+- Uzģenerēts manifest no S3 inventāra:
+
+  `python scripts/build_ric_manifest.py --s3-prefix s3://bakalaurs-ams/processed/reformat_data/ ...`
+
+  → **`Manifest rows: 2506`**, izvade: `data/processed/ric_manifest.csv`, `data/processed/ric_manifest_summary.json`.
+
+- Uzģenerēti spliti:
+
+  `python scripts/build_subject_splits.py ... --seed 42`
+
+  → **Subjects: 1798 | Sessions: 2506**; **train=1259, val=270, test=269**; faili `data/processed/splits/subject_split_v1.csv`, `session_split_v1.csv`.
+
+#### Pilna JSON kopas sinhronizācija lokāli
+
+- Diska vieta pirms sinhronizācijas: piemēram **`/` ~655 GiB brīvi** (pietiekami ~**44.9 GiB** JSON kopai).
+- Komanda (ilgstoša; ieteicams **`tmux`**):
+
+  `aws s3 sync s3://bakalaurs-ams/processed/reformat_data/ data/ric/reformat_data/ --endpoint-url https://ams3.digitaloceanspaces.com`
+
+- Pēc sinhronizācijas `json_root` no konfiga (`data/ric/reformat_data`) atbilst faktiskajam saturam.
+
+#### Pre-GPU pārbaude
+
+- `python scripts/pre_gpu_check.py` → **visi punkti [PASS]**, tai skaitā `manifest_expected_row_count: rows=2506`, `session_split_no_leakage`, `json_root_exists`.
+
+#### Treniņš un novērtēšana (izpildīts)
+
+**GPU smoke (2 epohas, seed=42)**
+
+- Komanda: `python -u scripts/train_anomaly.py --config config/anomaly_train_v1.yaml --epochs 2`
+- Run id: `ric-anom-20260420T220643Z-1ac6a08eba14`
+- Treniņš pabeigts bez kļūdām; validācijas metrika liecina par “virs-random” signālu, bet smoke rezultāti netiek izmantoti kā gala secinājums.
+
+Smoke eval kopsavilkums:
+
+- Val: `AUROC=0.5690`, `AUPRC=0.8893`
+- Test: `AUROC=0.6741`, `AUPRC=0.9378`
+
+**Galvenais skrējiens (20 epohas, seed=42)**
+
+- Komanda: `python -u scripts/train_anomaly.py --config config/anomaly_train_v1.yaml --epochs 20`
+- Run id: `ric-anom-20260420T224017Z-1ac6a08eba14`
+- Best val loss: `0.975842`
+
+Main run (seed=42) eval:
+
+- Val: `AUROC=0.5807`, `AUPRC=0.8880`
+- Test: `AUROC=0.6511`, `AUPRC=0.9261`
+
+Artefakti sinhronizēti uz Spaces:
+
+- `s3://bakalaurs-ams/checkpoints/ric-anom-20260420T224017Z-1ac6a08eba14/`
+- `s3://bakalaurs-ams/logs/ric-anom-20260420T224017Z-1ac6a08eba14/`
+- `s3://bakalaurs-ams/results/ric-anom-20260420T224017Z-1ac6a08eba14/`
+
+**Atkārtots galvenais skrējiens (20 epohas, seed=43)**
+
+- Izveidots atsevišķs konfigs: `config/anomaly_train_v1_seed43.yaml` (`seed: 43`)
+- Komanda: `python -u scripts/train_anomaly.py --config config/anomaly_train_v1_seed43.yaml --epochs 20`
+- Run id: `ric-anom-20260421T103611Z-73c98176a36d`
+- Best val loss: `0.975875`
+
+Main run (seed=43) eval:
+
+- Val: `AUROC=0.5936`, `AUPRC=0.8909`
+- Test: `AUROC=0.6349`, `AUPRC=0.9269`
+
+Artefakti sinhronizēti uz Spaces:
+
+- `s3://bakalaurs-ams/checkpoints/ric-anom-20260421T103611Z-73c98176a36d/`
+- `s3://bakalaurs-ams/logs/ric-anom-20260421T103611Z-73c98176a36d/`
+- `s3://bakalaurs-ams/results/ric-anom-20260421T103611Z-73c98176a36d/`
+
+#### Operacionāla piezīme: Spaces rakstīšanas tiesības
+
+- Sākotnēji `sync_run_artifacts.py` deva `AccessDenied` uz `PutObject`, lai gan lasīšana no bucket strādāja.
+- Cēlonis: izmantotajai Spaces atslēgai nebija rakstīšanas tiesību.
+- Risinājums: atjaunināts key pāris (`aws configure`) + write smoke tests (`aws s3 cp /tmp/... s3://bakalaurs-ams/checkpoints/_write_test.txt`), pēc kā pilna artefaktu sinhronizācija veiksmīga.
+
+### 18.9 Nākamā uzlabošanas fāze (precīzāks modelis)
+
+Balstoties uz diviem 20-epohu skrējieniem, modelis ir stabils “baseline” līmenī (AUROC virs 0.5), bet joprojām **mērens**. Nākamā fāze fokusējas uz kvalitātes celšanu, saglabājot reproducējamību.
+
+1. **Threshold tuning uz validācijas datiem (bez retraining)**
+   - Atrast optimālo slieksni pēc izvēlētā kritērija (piem., max F1 vai balanced accuracy) uz `eval_val/per_sample_scores.csv`.
+   - Fiksēto slieksni pielietot `eval_test` datiem.
+   - Mērķis: uzlabot praktiskās klasifikācijas metrikas bez papildu GPU laika.
+
+2. **Vēl vismaz 1 papildu seed skrējiens (kopā 3+)**
+   - `seed=44` ar identisku pipeline.
+   - Mērķis: ziņot metriku vidējo/izkliedi, nevis vienu punktu.
+
+3. **Treniņa dinamika**
+   - Testēt garāku treniņu (40+ epohas) un/vai LR scheduler.
+   - Novērtēt, vai val AUROC joprojām uzlabojas pēc 20 epohām.
+
+4. **Modeļa kapacitātes tests**
+   - `hidden_size: 128 -> 256` (kontrolēts A/B ar to pašu split/seed shēmu).
+   - Mērķis: pārbaudīt, vai papildus kapacitāte uzlabo separāciju.
+
+5. **Galvenais ziņošanas princips bakalaura darbā**
+   - Primāri ziņot AUROC/AUPRC ar seed variācijas kontekstu.
+   - `threshold_accuracy` izmantot kā sekundāru metriku (atkarīga no sliekšņa un klases balansa).
+
+### 18.10 Label kvalitātes uzlabojums (ieviests kodā, 2026-04-22)
+
+Pēc klases balansa analīzes tika konstatēts, ka līdzšinējais `is_injured` ir **konservatīvs** marķējums (noklusējums bieži ir `1`, ja nav skaidra “no injury” teksta). Tas var pazemināt interpretējamību, ja mērķis ir “stingrāka” injury definīcija.
+
+Lai uzlabotu eksperimentu kvalitāti **bez backward-breaking izmaiņām**, kodā ieviestas šādas izmaiņas:
+
+1. `scripts/build_ric_manifest.py`:
+   - saglabāts esošais lauks `is_injured` (konservatīvā loģika netiek lauzta);
+   - pievienots jauns lauks `is_injured_strict`, kur:
+     - `0`, ja ir explicit “no injury” vai visi injury lauki tukši/unknown;
+     - `1`, ja ir informatīvs injury teksts;
+   - `ric_manifest_summary.json` tagad glabā abus skaitītājus:
+     - `sessions_marked_injured_conservative`,
+     - `sessions_marked_injured_strict`.
+
+2. `scripts/report_class_balance.py`:
+   - pievienots parametrs `--label-col`, lai balansu var analizēt gan pēc:
+     - `is_injured` (legacy konservatīvais),
+     - `is_injured_strict` (jaunais stingrākais variants).
+
+Praktiskā nozīme bakalaura darbam:
+- var godīgi ziņot rezultātus uz **abām** label definīcijām (sensitivity analīze),
+- nezaudējot reproducējamību ar iepriekšējiem run-id/checkpointiem.
+
+Ieteicamais nākamais eksperiments:
+- pārbūvēt manifest/split failus ar jauno kolonnu,
+- trenēt baseline ar to pašu pipeline,
+- salīdzināt AUROC/AUPRC starp `is_injured` un `is_injured_strict`.
+

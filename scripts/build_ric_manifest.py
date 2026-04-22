@@ -43,6 +43,10 @@ def _lower(v: object) -> str:
     return _norm(v).lower()
 
 
+_NO_INJURY_TOKENS = {"no injury", "noinjury"}
+_EMPTY_TOKENS = {"", "n/a", "null"}
+
+
 def _injury_flag(row: dict) -> int:
     """
     Conservative injury flag inference from metadata.
@@ -54,11 +58,36 @@ def _injury_flag(row: dict) -> int:
     inj_joint = _lower(row.get("InjJoint") or row.get("injjoint"))
     spec = _lower(row.get("SpecInjury") or row.get("specinjury"))
 
-    if inj_defn in {"no injury", "noinjury"} and (
-        inj_joint in {"", "no injury", "noinjury", "n/a", "null"} and spec in {"", "n/a", "null"}
+    if inj_defn in _NO_INJURY_TOKENS and (
+        inj_joint in (_EMPTY_TOKENS | _NO_INJURY_TOKENS) and spec in _EMPTY_TOKENS
     ):
         return 0
-    if inj_joint in {"no injury", "noinjury"} and spec in {"", "n/a", "null"} and inj_defn in {"", "n/a", "null"}:
+    if inj_joint in _NO_INJURY_TOKENS and spec in _EMPTY_TOKENS and inj_defn in _EMPTY_TOKENS:
+        return 0
+    return 1
+
+
+def _injury_flag_strict(row: dict) -> int:
+    """
+    Stricter injury label:
+      1 -> explicit injury-related metadata present
+      0 -> explicit 'no injury' OR all relevant fields empty/unknown
+
+    This is provided alongside the legacy conservative flag (`is_injured`) so
+    downstream experiments can compare label definitions without breaking old runs.
+    """
+    inj_defn = _lower(row.get("InjDefn") or row.get("injdefn"))
+    inj_joint = _lower(row.get("InjJoint") or row.get("injjoint"))
+    spec = _lower(row.get("SpecInjury") or row.get("specinjury"))
+    vals = [inj_defn, inj_joint, spec]
+
+    # Any explicit "no injury" claim dominates.
+    if any(v in _NO_INJURY_TOKENS for v in vals):
+        return 0
+
+    # Remove empty/unknown placeholders. If nothing remains, do not mark injured.
+    informative = [v for v in vals if v not in _EMPTY_TOKENS]
+    if not informative:
         return 0
     return 1
 
@@ -81,6 +110,7 @@ def _load_meta(path: Path, mode_name: str) -> dict[SessionKey, dict]:
             merged = dict(row)
             merged["_mode_source"] = mode_name
             merged["_is_injured"] = _injury_flag(row)
+            merged["_is_injured_strict"] = _injury_flag_strict(row)
             out[key] = merged
     return out
 
@@ -163,6 +193,9 @@ def _build_rows(
         is_injured = base.get("_is_injured")
         if is_injured is None:
             is_injured = 0
+        is_injured_strict = base.get("_is_injured_strict")
+        if is_injured_strict is None:
+            is_injured_strict = 0
 
         rows.append(
             {
@@ -175,6 +208,7 @@ def _build_rows(
                 "has_run": has_run,
                 "has_walk": has_walk,
                 "is_injured": int(is_injured),
+                "is_injured_strict": int(is_injured_strict),
                 "speed_run_mps": _safe_float((run_row or {}).get("speed_r")),
                 "speed_walk_mps": _safe_float((walk_row or {}).get("speed_w")),
                 "age_years": _safe_float(base.get("age")),
@@ -205,6 +239,7 @@ def _write_csv(rows: list[dict], out_csv: Path) -> None:
         "has_run",
         "has_walk",
         "is_injured",
+        "is_injured_strict",
         "speed_run_mps",
         "speed_walk_mps",
         "age_years",
@@ -231,13 +266,15 @@ def _maybe_write_summary(rows: list[dict], out_json: Path) -> None:
     walk_n = sum(int(r["has_walk"]) for r in rows)
     both_n = sum(1 for r in rows if r["mode"] == "both")
     injured_n = sum(int(r["is_injured"]) for r in rows)
+    injured_strict_n = sum(int(r["is_injured_strict"]) for r in rows)
     payload = {
         "sessions_total": n,
         "subjects_total": subjects,
         "sessions_with_run": run_n,
         "sessions_with_walk": walk_n,
         "sessions_with_both": both_n,
-        "sessions_marked_injured": injured_n,
+        "sessions_marked_injured_conservative": injured_n,
+        "sessions_marked_injured_strict": injured_strict_n,
     }
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
