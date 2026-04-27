@@ -43,6 +43,11 @@ def _lower(v: object) -> str:
     return _norm(v).lower()
 
 
+def _canon_id(v: object) -> str:
+    # Canonical IDs prevent split leakage from case/whitespace aliases (e.g., "S01 " vs "s01").
+    return _norm(v).lower()
+
+
 _NO_INJURY_TOKENS = {"no injury", "noinjury"}
 _EMPTY_TOKENS = {"", "n/a", "null"}
 
@@ -102,7 +107,7 @@ def _load_meta(path: Path, mode_name: str) -> dict[SessionKey, dict]:
         if not reader.fieldnames:
             raise ValueError(f"CSV has no header: {path}")
         for row in reader:
-            sid = _norm(row.get("sub_id") or row.get("subid"))
+            sid = _canon_id(row.get("sub_id") or row.get("subid"))
             fn = _norm(row.get("filename"))
             if not sid or not fn:
                 continue
@@ -126,7 +131,7 @@ def _iter_local_sessions(local_dir: Path) -> Iterable[tuple[str, str, str]]:
         if not p.is_file():
             continue
         rel = p.relative_to(local_dir).as_posix()
-        subject_id = p.parent.name
+        subject_id = _canon_id(p.parent.name)
         yield subject_id, p.name, rel
 
 
@@ -154,7 +159,7 @@ def _iter_s3_sessions(s3_prefix: str, endpoint_url: str) -> Iterable[tuple[str, 
         key_parts = key.split("/")
         if len(key_parts) < 2:
             continue
-        subject_id = key_parts[-2]
+        subject_id = _canon_id(key_parts[-2])
         filename = key_parts[-1]
         yield subject_id, filename, key
 
@@ -190,12 +195,21 @@ def _build_rows(
         has_walk = 1 if walk_row else 0
 
         mode = "both" if (has_run and has_walk) else ("run" if has_run else ("walk" if has_walk else "unknown"))
+        label_provenance = "matched_metadata"
         is_injured = base.get("_is_injured")
         if is_injured is None:
             is_injured = 0
+            label_provenance = "missing_metadata"
         is_injured_strict = base.get("_is_injured_strict")
         if is_injured_strict is None:
             is_injured_strict = 0
+            label_provenance = "missing_metadata"
+
+        if run_row is not None and walk_row is not None:
+            run_lab = int(run_row.get("_is_injured", is_injured))
+            walk_lab = int(walk_row.get("_is_injured", is_injured))
+            if run_lab != walk_lab:
+                label_provenance = "conflicting_mode_metadata"
 
         rows.append(
             {
@@ -209,6 +223,7 @@ def _build_rows(
                 "has_walk": has_walk,
                 "is_injured": int(is_injured),
                 "is_injured_strict": int(is_injured_strict),
+                "label_provenance": label_provenance,
                 "speed_run_mps": _safe_float((run_row or {}).get("speed_r")),
                 "speed_walk_mps": _safe_float((walk_row or {}).get("speed_w")),
                 "age_years": _safe_float(base.get("age")),
@@ -240,6 +255,7 @@ def _write_csv(rows: list[dict], out_csv: Path) -> None:
         "has_walk",
         "is_injured",
         "is_injured_strict",
+        "label_provenance",
         "speed_run_mps",
         "speed_walk_mps",
         "age_years",

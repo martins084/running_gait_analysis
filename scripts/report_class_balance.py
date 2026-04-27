@@ -84,11 +84,20 @@ def main() -> None:
     if args.json:
         print(json.dumps(out, indent=2))
     else:
-        print(
-            "Column is_injured comes from build_ric_manifest._injury_flag: "
-            "1 unless metadata explicitly matches 'no injury' (conservative default → many rows are 1).",
-            file=sys.stderr,
-        )
+        if lab == "is_injured":
+            print(
+                "Column is_injured comes from build_ric_manifest._injury_flag: "
+                "1 unless metadata explicitly matches 'no injury' (conservative default → many rows are 1).",
+                file=sys.stderr,
+            )
+        elif lab == "is_injured_strict":
+            print(
+                "Column is_injured_strict comes from build_ric_manifest._injury_flag_strict: "
+                "0 for explicit 'no injury' or fully empty injury fields; 1 for explicit injury metadata.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Using custom label column: {lab}", file=sys.stderr)
         print(f"Using label column: {lab}", file=sys.stderr)
         for split in ("train", "val", "test"):
             s = out[split]

@@ -28,19 +28,27 @@ from sklearn.metrics import balanced_accuracy_score, f1_score, precision_score, 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _load_scores(path: Path) -> tuple[np.ndarray, np.ndarray]:
+def _load_scores(path: Path, label_col: str) -> pd.DataFrame:
     """Load labels and reconstruction errors from evaluate_anomaly CSV output."""
     if not path.is_file():
         raise FileNotFoundError(f"Missing score CSV: {path}")
     df = pd.read_csv(path)
-    required = {"is_injured", "recon_error"}
+    required = {label_col, "recon_error", "subject_id"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Score CSV missing required columns: {sorted(missing)}")
-    y = df["is_injured"].astype(int).to_numpy()
-    s = df["recon_error"].astype(float).to_numpy()
-    if len(y) == 0:
+    if len(df) == 0:
         raise ValueError(f"Score CSV has zero rows: {path}")
+    return df
+
+
+def _to_subject_p90(df: pd.DataFrame, label_col: str) -> tuple[np.ndarray, np.ndarray]:
+    g = df.groupby("subject_id", as_index=False).agg(
+        recon_error=("recon_error", lambda s: float(np.quantile(np.asarray(s, dtype=float), 0.90))),
+        label=(label_col, "max"),
+    )
+    y = g["label"].astype(int).to_numpy()
+    s = g["recon_error"].astype(float).to_numpy()
     return y, s
 
 
@@ -52,6 +60,12 @@ def _select_threshold(y_val: np.ndarray, s_val: np.ndarray, method: str) -> floa
     - youden_j: maximize (TPR - FPR)
     - max_f1: threshold with highest F1 score (can be unstable with imbalance)
     """
+    if len(np.unique(y_val)) < 2:
+        raise ValueError(
+            "Validation labels have a single class; cannot tune threshold with supervised objectives. "
+            "Use a fixed threshold or quantile from healthy reference scores."
+        )
+
     if method == "youden_j":
         fpr, tpr, thr = roc_curve(y_val, s_val)
         idx = int(np.argmax(tpr - fpr))
@@ -100,14 +114,33 @@ def main() -> None:
         default=ROOT / "results",
         help="Root directory that contains run result folders.",
     )
+    parser.add_argument(
+        "--label-col",
+        default="is_injured",
+        help="Label column present in evaluate per_sample_scores.csv.",
+    )
+    parser.add_argument(
+        "--metric-level",
+        choices=["session", "subject"],
+        default="subject",
+        help="Tune threshold on session rows or subject-level P90 aggregated scores.",
+    )
     args = parser.parse_args()
 
     run_dir = args.results_root / args.run_id
     val_csv = run_dir / "eval_val" / "per_sample_scores.csv"
     test_csv = run_dir / "eval_test" / "per_sample_scores.csv"
 
-    y_val, s_val = _load_scores(val_csv)
-    y_test, s_test = _load_scores(test_csv)
+    val_df = _load_scores(val_csv, label_col=args.label_col)
+    test_df = _load_scores(test_csv, label_col=args.label_col)
+    if args.metric_level == "subject":
+        y_val, s_val = _to_subject_p90(val_df, label_col=args.label_col)
+        y_test, s_test = _to_subject_p90(test_df, label_col=args.label_col)
+    else:
+        y_val = val_df[args.label_col].astype(int).to_numpy()
+        s_val = val_df["recon_error"].astype(float).to_numpy()
+        y_test = test_df[args.label_col].astype(int).to_numpy()
+        s_test = test_df["recon_error"].astype(float).to_numpy()
 
     threshold = _select_threshold(y_val, s_val, method=args.method)
 
@@ -115,12 +148,29 @@ def main() -> None:
         "run_id": args.run_id,
         "selected_on": "eval_val",
         "selection_objective": args.method,
+        "metric_level": args.metric_level,
+        "aggregation": "p90_by_subject" if args.metric_level == "subject" else "none",
         "val_at_selected_threshold": _metrics_at_threshold(y_val, s_val, threshold),
         "test_at_selected_threshold": _metrics_at_threshold(y_test, s_test, threshold),
     }
 
-    out_path = run_dir / f"threshold_tuned_metrics_{args.method}.json"
+    suffix = f"{args.method}_{args.metric_level}_{args.label_col}"
+    out_path = run_dir / f"threshold_tuned_metrics_{suffix}.json"
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # Convenience artifact for evaluate_anomaly.py --threshold-file
+    (run_dir / f"selected_threshold_{suffix}.json").write_text(
+        json.dumps(
+            {
+                "threshold": float(threshold),
+                "source": "eval_val",
+                "method": args.method,
+                "metric_level": args.metric_level,
+                "label_col": args.label_col,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     print(json.dumps(payload, indent=2))
     print(f"Saved: {out_path}")

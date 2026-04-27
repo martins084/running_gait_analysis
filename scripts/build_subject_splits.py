@@ -43,6 +43,10 @@ def _to_int(v: object, default: int = 0) -> int:
         return default
 
 
+def _canon_id(v: object) -> str:
+    return str(v).strip().lower()
+
+
 def _subject_injury_labels(session_rows: list[dict], label_col: str) -> dict[str, int]:
     """
     One label per subject: 1 if any session is marked injured, else 0.
@@ -50,7 +54,7 @@ def _subject_injury_labels(session_rows: list[dict], label_col: str) -> dict[str
     """
     out: dict[str, int] = {}
     for r in session_rows:
-        sid = r["subject_id"]
+        sid = _canon_id(r["subject_id"])
         inj = _to_int(r.get(label_col), 0)
         out[sid] = max(out.get(sid, 0), inj)
     return out
@@ -96,7 +100,7 @@ def _assign_subject_splits_stratified(
     train_ratio: float,
     val_ratio: float,
     seed: int,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], bool]:
     """
     Three-way split with sklearn stratification on subject-level injury label.
     Falls back to the non-stratified routine if there are not enough positives
@@ -107,7 +111,7 @@ def _assign_subject_splits_stratified(
     n = len(ids)
     test_size = 1.0 - train_ratio - val_ratio
     if test_size <= 0.0 or n < 3:
-        return _assign_subject_splits(subject_ids, train_ratio, val_ratio, seed)
+        return _assign_subject_splits(subject_ids, train_ratio, val_ratio, seed), False
 
     # Both classes are required for stratify=.
     if len(set(y)) < 2 or sum(y) < 2 or (n - sum(y)) < 2:
@@ -115,7 +119,7 @@ def _assign_subject_splits_stratified(
             "Stratify skipped: need at least 2 positive and 2 negative subjects. Using random split.",
             file=sys.stderr,
         )
-        return _assign_subject_splits(subject_ids, train_ratio, val_ratio, seed)
+        return _assign_subject_splits(subject_ids, train_ratio, val_ratio, seed), False
 
     try:
         # First: isolate test set, preserving injury ratio.
@@ -139,7 +143,7 @@ def _assign_subject_splits_stratified(
         )
     except ValueError as e:
         print(f"Stratify failed ({e}); using random subject split instead.", file=sys.stderr)
-        return _assign_subject_splits(subject_ids, train_ratio, val_ratio, seed)
+        return _assign_subject_splits(subject_ids, train_ratio, val_ratio, seed), False
 
     split_map: dict[str, str] = {}
     for sid in tr_ids:
@@ -148,7 +152,37 @@ def _assign_subject_splits_stratified(
         split_map[sid] = "val"
     for sid in te_ids:
         split_map[sid] = "test"
-    return split_map
+    return split_map, True
+
+
+def _session_rate(rows: list[dict], split_map: dict[str, str], split_name: str, label_col: str) -> float:
+    sess = [r for r in rows if split_map.get(r["subject_id"]) == split_name]
+    tot = len(sess)
+    if not tot:
+        return 0.0
+    inj = sum(_to_int(r.get(label_col), 0) for r in sess)
+    return inj / tot
+
+
+def _enforce_split_label_coverage(rows: list[dict], split_map: dict[str, str], label_col: str) -> None:
+    for split_name in ("train", "val", "test"):
+        sess = [r for r in rows if split_map.get(r["subject_id"]) == split_name]
+        labels = {int(_to_int(r.get(label_col), 0)) for r in sess}
+        if len(labels) < 2:
+            raise RuntimeError(
+                f"Split `{split_name}` has one class only for label `{label_col}`; aborting split generation."
+            )
+
+
+def _enforce_prevalence_drift(rows: list[dict], split_map: dict[str, str], label_col: str, max_drift: float) -> None:
+    tr = _session_rate(rows, split_map, "train", label_col)
+    va = _session_rate(rows, split_map, "val", label_col)
+    te = _session_rate(rows, split_map, "test", label_col)
+    drift = max(abs(tr - va), abs(tr - te), abs(va - te))
+    if drift > max_drift:
+        raise RuntimeError(
+            f"Session-level prevalence drift too high for {label_col}: max delta={drift:.3f} > {max_drift:.3f}."
+        )
 
 
 def _validate_leakage(session_rows: list[dict], split_map: dict[str, str]) -> None:
@@ -219,6 +253,12 @@ def main() -> None:
         default="is_injured",
         help="Label column used for stratify and rate reporting (e.g. is_injured, is_injured_strict).",
     )
+    parser.add_argument(
+        "--max-prevalence-drift",
+        type=float,
+        default=0.05,
+        help="Fail split generation when max pairwise session prevalence drift exceeds this threshold.",
+    )
     args = parser.parse_args()
 
     if not (0 < args.train_ratio < 1 and 0 <= args.val_ratio < 1 and (args.train_ratio + args.val_ratio) < 1):
@@ -226,9 +266,12 @@ def main() -> None:
         sys.exit(2)
 
     rows = _read_manifest(args.manifest_csv)
+    for r in rows:
+        r["subject_id"] = _canon_id(r.get("subject_id", ""))
+
     if args.stratify:
         y_by_subj = _subject_injury_labels(rows, label_col=args.label_col)
-        split_map = _assign_subject_splits_stratified(
+        split_map, stratified_used = _assign_subject_splits_stratified(
             [r["subject_id"] for r in rows],
             y_by_subj,
             train_ratio=args.train_ratio,
@@ -242,7 +285,10 @@ def main() -> None:
             val_ratio=args.val_ratio,
             seed=args.seed,
         )
+        stratified_used = False
     _validate_leakage(rows, split_map)
+    _enforce_split_label_coverage(rows, split_map, args.label_col)
+    _enforce_prevalence_drift(rows, split_map, args.label_col, float(args.max_prevalence_drift))
 
     _write_subject_split(args.output_subject_split, split_map, seed=args.seed)
     _write_session_split(args.output_session_split, rows, split_map)
@@ -267,6 +313,7 @@ def main() -> None:
     print(f"Subjects: {n_sub} | Sessions: {n_sess}")
     print(f"Subject split counts -> train={c_train}, val={c_val}, test={c_test}")
     if args.stratify:
+        print(f"Stratified split used: {stratified_used}")
         print(
             f"Label({args.label_col}) session rate: train {t_inj}/{t_n}={t_r:.1%} | "
             f"val {v_inj}/{v_n}={v_r:.1%} | test {e_inj}/{e_n}={e_r:.1%}"

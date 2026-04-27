@@ -752,7 +752,7 @@ Balstoties uz diviem 20-epohu skrējieniem, modelis ir stabils “baseline” l�
    - `hidden_size: 128 -> 256` (kontrolēts A/B ar to pašu split/seed shēmu).
    - Mērķis: pārbaudīt, vai papildus kapacitāte uzlabo separāciju.
 
-5. **Galvenais ziņošanas princips bakalaura darbā**
+5. **Galvenais ziņošanas princips bakalaura darbā**,
    - Primāri ziņot AUROC/AUPRC ar seed variācijas kontekstu.
    - `threshold_accuracy` izmantot kā sekundāru metriku (atkarīga no sliekšņa un klases balansa).
 
@@ -785,3 +785,143 @@ Ieteicamais nākamais eksperiments:
 - trenēt baseline ar to pašu pipeline,
 - salīdzināt AUROC/AUPRC starp `is_injured` un `is_injured_strict`.
 
+### 18.11 Anomāliju pipeline kvalitātes hardening (ieviests kodā, 2026-04-27)
+
+Šajā etapā tika ieviestas mērķētas izmaiņas, lai novērstu atlikušos metodoloģiskos riskus un paaugstinātu gala metriku uzticamību (ne tikai “offline” skaitļu optimismu).
+
+#### 18.11.1 Label izvēle ir pilnībā konfigurējama end-to-end
+
+Iepriekš `is_injured_strict` eksperimenti bija daļēji (manifesta/split līmenī), bet treniņš/novērtēšana joprojām bieži balstījās uz `is_injured`.
+
+Tagad:
+
+1. `core/ric_dataset.py`
+   - `RICAnomalyDataset` pieņem `label_col`;
+   - required kolonnas validācija tiek veikta pret izvēlēto label kolonnu;
+   - labels tiek lasītas no `row[label_col]`, nevis hardcoded `is_injured`.
+
+2. `scripts/train_anomaly.py`
+   - dataset izveide izmanto `data.label_col` no YAML;
+   - oversampling/klases svaru loģika arī balstās uz šo pašu izvēlēto kolonnu.
+
+3. `scripts/evaluate_anomaly.py`
+   - `per_sample_scores.csv` raksta izvēlēto label kolonnu;
+   - metrikas tiek rēķinātas konsekventi pret to pašu label definīciju.
+
+4. `scripts/tune_threshold.py`
+   - pievienots `--label-col`, lai threshold tuning un gala test metrics būtu uz tā paša label lauka.
+
+5. Konfigurācija
+   - `config/anomaly_train_v1.yaml` un `config/anomaly_train_v2.yaml` pievienots:
+     - `data.label_col: is_injured_strict`
+   - tas nodrošina strict-label eksperimentu bez papildu koda rediģēšanas.
+
+#### 18.11.2 Split quality control ir fail-fast (balanced politika)
+
+`scripts/build_subject_splits.py` papildināts ar stingrākiem “quality gate”:
+
+1. One-class aizsardzība:
+   - skripts beidzas ar kļūdu, ja jebkurš no splitiem (`train`, `val`, `test`) satur tikai vienu klasi izvēlētajam `label_col`.
+
+2. Prevalence drift gate:
+   - skripts beidzas ar kļūdu, ja max pairwise session prevalence drift pārsniedz slieksni (`--max-prevalence-drift`, noklusējums `0.05`).
+
+3. Papildus:
+   - canonical subject ID (`strip + lower`) konsekvencei;
+   - tiek izdrukāts, vai stratified split tiešām tika izmantots (`Stratified split used: True/False`).
+
+Praktiskā ietekme:
+- nederīgi spliti vairs neiet tālāk uz dārgu treniņu;
+- samazinās risks iegūt maldinošus AUROC/AUPRC secinājumus.
+
+#### 18.11.3 Checkpoint izvēle sakārtota pēc faktiskā mērķa
+
+`scripts/train_anomaly.py` uzlabots checkpoint selection mehānisms:
+
+1. Primāri tiek optimizēts `val_auroc` (ja pieejams), nevis tikai `val_loss`.
+2. Equal-AUROC tie-break tagad izmanto
+   - `best_val_loss_at_best_auroc`
+   (nevis globālo minimālo `best_val_loss`).
+3. Checkpoint metadata un run summary glabā:
+   - `best_val_auroc`,
+   - `best_val_loss`,
+   - `best_val_loss_at_best_auroc`.
+
+Tas novērš iepriekšējo neatbilstību starp deklarēto un faktisko “AUROC-first + loss tie-break” loģiku.
+
+#### 18.11.4 Subject-level primārās metrikas (P90) ieviestas novērtēšanā
+
+`scripts/evaluate_anomaly.py` tagad raksta skaidri nošķirtu metriku struktūru:
+
+1. `primary_level: subject_p90`
+2. `subject_level`:
+   - katram subjektam score = 90. percentīle no tā sesiju `recon_error`;
+   - labels subjektam = max no sesiju labels;
+   - AUROC/AUPRC + threshold metrikas šajā līmenī.
+3. `session_level`:
+   - saglabāts kā sekundārs diagnostikas slānis.
+
+Tādējādi gala ziņošanas metrika ir tuvāka reālajam screening scenārijam nekā tīri sesiju līmeņa skats.
+
+#### 18.11.5 Threshold tuning un testa “diagnostic-only” marķējums
+
+1. `scripts/evaluate_anomaly.py`:
+   - pievienoti droši sliekšņa avoti:
+     - `--fixed-threshold`,
+     - `--threshold-file`;
+   - `test` splitam split-local quantile pēc noklusējuma ir bloķēts;
+   - override (`--allow-test-quantile`) ir pieejams tikai diagnostikai.
+
+2. Metrics JSON tagad satur:
+   - `threshold_source`,
+   - `diagnostic_only` (bool),
+   - `reporting_warning` (machine-readable brīdinājums).
+
+3. `scripts/tune_threshold.py`:
+   - pievienots `--metric-level {session,subject}` (noklusējums `subject`);
+   - subject režīmā threshold tiek tunēts uz tā paša P90 agregācijas principa;
+   - tiek rakstīts arī `selected_threshold_<method>.json` ērtai atkārtotai izmantošanai eval skriptā.
+
+#### 18.11.6 Treniņa stabilitāte un reproducējamība (papildinājumi)
+
+`scripts/train_anomaly.py` un konfigurācijas papildinātas ar:
+
+1. Sample-weighted val loss agregāciju (nevis mean-of-batch-means).
+2. `ReduceLROnPlateau` scheduler atbalstu (konfigurējams YAML).
+3. Early stopping (patience no YAML).
+4. Dataloader worker seeding (`worker_init_fn` + `torch.Generator`) reproducējamībai.
+5. Feature dimension inferenci no train split (`compute_max_feature_dim(..., split_filter="train")`), lai samazinātu holdout struktūras “peek” risku.
+
+#### 18.11.7 Datu kvalitātes metadati manifestā
+
+`scripts/build_ric_manifest.py` pievienots:
+
+1. `label_provenance` lauks:
+   - `matched_metadata`,
+   - `missing_metadata`,
+   - `conflicting_mode_metadata`.
+
+2. Subject ID canonicalization (`strip + lower`) arī inventory/meta matching ceļā.
+
+Praktiskā nozīme:
+- var atsevišķi analizēt potenciāli trokšņainas rindas;
+- vieglāk veikt godīgu sensitivity analīzi bakalaura darba rezultātu nodaļā.
+
+#### 18.11.8 Verifikācijas statuss
+
+Pēc izmaiņām izpildīts:
+
+1. `python -m compileall` uz ietekmētajiem moduļiem (OK).
+2. Linter diagnostika (`ReadLints`) uz rediģētajiem failiem (bez jaunām kļūdām).
+3. CLI verifikācija:
+   - `scripts/evaluate_anomaly.py --help`,
+   - `scripts/tune_threshold.py --help`,
+   - `scripts/build_subject_splits.py --help`
+   (jaunie argumenti pieejami un korekti parsējas).
+
+Secinājums:
+- pipeline tagad atbilst stingrākam, reproducējamam “methodology-first” režīmam:
+  - label definīcija ir konsekventa end-to-end,
+  - split kvalitāte tiek enforce-ota pirms treniņa,
+  - primārais novērtējums ir subject-level,
+  - diagnostiskie testa override ir skaidri marķēti kā ne-gala rezultāti.

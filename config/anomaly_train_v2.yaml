@@ -14,6 +14,8 @@ data:
   train_random_window: true
   train_include_injured: false
   val_include_injured: true
+  label_col: is_injured_strict
+  feature_engineering: motion_stats
 
 model:
   variant: v2
@@ -31,6 +33,16 @@ train:
   grad_clip_norm: 1.0
   loss: huber      # mse|huber
   device: auto     # auto|cpu|cuda
+  scheduler:
+    enabled: true
+    mode: min
+    metric: val_loss
+    factor: 0.5
+    patience: 5
+    min_lr: 0.000001
+  early_stopping:
+    enabled: true
+    patience: 12
 
 output:
   checkpoints_dir: checkpoints

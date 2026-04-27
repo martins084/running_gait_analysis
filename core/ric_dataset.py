@@ -74,10 +74,11 @@ def compute_max_feature_dim(
     session_split_csv: Path,
     json_root: Path,
     seq: SequenceSpec,
+    split_filter: str | set[str] | None = None,
 ) -> int:
     """
-    Scan every session in the split CSV (all splits) and return the maximum
-    feature dimension (num_markers * 3) after mode selection.
+    Scan sessions in the split CSV and return the maximum feature dimension
+    (num_markers * 3) after mode selection.
 
     Sessions differ in how many marker tracks exist; the model needs one fixed
     input size, so we pad shorter sequences to this width.
@@ -85,11 +86,19 @@ def compute_max_feature_dim(
     session_split_csv = Path(session_split_csv)
     json_root = Path(json_root)
     rows: list[dict] = []
+    allowed_splits: set[str] | None = None
+    if split_filter is not None:
+        if isinstance(split_filter, str):
+            allowed_splits = {split_filter}
+        else:
+            allowed_splits = {str(v) for v in split_filter}
     with open(session_split_csv, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         if not reader.fieldnames:
             raise ValueError("Session split CSV has no header row.")
         for r in reader:
+            if allowed_splits is not None and str(r.get("split", "")) not in allowed_splits:
+                continue
             rows.append(r)
     if not rows:
         raise ValueError("Session split CSV has no rows.")
@@ -165,6 +174,7 @@ class RICAnomalyDataset(Dataset):
         include_injured: bool = True,
         seed: int = 42,
         feature_dim: int | None = None,
+        label_col: str = "is_injured",
     ) -> None:
         super().__init__()
         self.session_split_csv = Path(session_split_csv)
@@ -172,6 +182,7 @@ class RICAnomalyDataset(Dataset):
         self.split = split
         self.seq = seq or SequenceSpec()
         self.include_injured = include_injured
+        self.label_col = str(label_col or "is_injured")
         self.rng = random.Random(seed)
 
         if not self.session_split_csv.is_file():
@@ -205,14 +216,14 @@ class RICAnomalyDataset(Dataset):
             reader = csv.DictReader(f)
             if not reader.fieldnames:
                 raise ValueError("Session split CSV has no header row.")
-            required = {"subject_id", "session_id", "source_ref", "split", "is_injured"}
+            required = {"subject_id", "session_id", "source_ref", "split", self.label_col}
             missing = required - set(reader.fieldnames)
             if missing:
                 raise ValueError(f"Session split CSV missing required columns: {sorted(missing)}")
             for r in reader:
                 if r.get("split") != self.split:
                     continue
-                injured = _to_int(r.get("is_injured"), 0)
+                injured = _to_int(r.get(self.label_col), 0)
                 if not self.include_injured and injured == 1:
                     continue
                 rows.append(r)
@@ -339,7 +350,7 @@ class RICAnomalyDataset(Dataset):
         x = self._load_sequence(row)
         return {
             "x": torch.from_numpy(x),
-            "is_injured": torch.tensor(_to_int(row.get("is_injured"), 0), dtype=torch.int64),
+            "is_injured": torch.tensor(_to_int(row.get(self.label_col), 0), dtype=torch.int64),
             "subject_id": row.get("subject_id", ""),
             "session_id": row.get("session_id", ""),
             "mode": row.get("_selected_mode") or row.get("mode") or "",

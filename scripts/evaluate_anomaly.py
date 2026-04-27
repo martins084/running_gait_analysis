@@ -14,6 +14,7 @@ import argparse
 import csv
 import json
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -46,8 +47,21 @@ def _quantile_threshold(scores: np.ndarray, q: float) -> float:
     return float(np.quantile(scores, q))
 
 
+def _load_threshold_from_file(path: Path) -> float:
+    if not path.is_file():
+        raise FileNotFoundError(f"Threshold file not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        if "threshold" in payload:
+            return float(payload["threshold"])
+        if "val_at_selected_threshold" in payload and isinstance(payload["val_at_selected_threshold"], dict):
+            if "threshold" in payload["val_at_selected_threshold"]:
+                return float(payload["val_at_selected_threshold"]["threshold"])
+    raise ValueError("Threshold file must contain `threshold` or `val_at_selected_threshold.threshold`.")
+
+
 @torch.no_grad()
-def _collect_scores(model: torch.nn.Module, loader: DataLoader, device: torch.device) -> dict:
+def _collect_scores(model: torch.nn.Module, loader: DataLoader, device: torch.device, label_col: str) -> dict:
     model.eval()
     out_rows = []
     all_scores = []
@@ -63,7 +77,7 @@ def _collect_scores(model: torch.nn.Module, loader: DataLoader, device: torch.de
                     "subject_id": batch["subject_id"][i],
                     "session_id": batch["session_id"][i],
                     "mode": batch["mode"][i],
-                    "is_injured": int(labels[i]),
+                    label_col: int(labels[i]),
                     "recon_error": float(scores[i]),
                 }
             )
@@ -72,13 +86,44 @@ def _collect_scores(model: torch.nn.Module, loader: DataLoader, device: torch.de
     return {"rows": out_rows, "scores": np.array(all_scores), "labels": np.array(all_labels)}
 
 
-def _write_csv(path: Path, rows: list[dict]) -> None:
+def _write_csv(path: Path, rows: list[dict], label_col: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["subject_id", "session_id", "mode", "is_injured", "recon_error"])
+        w = csv.DictWriter(f, fieldnames=["subject_id", "session_id", "mode", label_col, "recon_error"])
         w.writeheader()
         for r in rows:
             w.writerow(r)
+
+
+def _classification_metrics(y_true: np.ndarray, scores: np.ndarray, thr: float) -> dict:
+    y_pred = (scores >= thr).astype(int)
+    out = {
+        "num_samples": int(len(scores)),
+        "mean_recon_error": float(scores.mean()) if len(scores) else float("nan"),
+        "std_recon_error": float(scores.std()) if len(scores) else float("nan"),
+        "threshold_accuracy": float((y_pred == y_true).mean()) if len(y_true) else float("nan"),
+        "predicted_positive_rate": float(y_pred.mean()) if len(y_pred) else float("nan"),
+    }
+    if len(np.unique(y_true)) >= 2:
+        out["auroc"] = float(roc_auc_score(y_true, scores))
+        out["auprc"] = float(average_precision_score(y_true, scores))
+    else:
+        out["auroc"] = float("nan")
+        out["auprc"] = float("nan")
+    return out
+
+
+def _aggregate_subject_p90(rows: list[dict], label_col: str) -> tuple[np.ndarray, np.ndarray]:
+    by_subject: dict[str, list[float]] = defaultdict(list)
+    subj_label: dict[str, int] = {}
+    for r in rows:
+        sid = str(r["subject_id"])
+        by_subject[sid].append(float(r["recon_error"]))
+        subj_label[sid] = max(subj_label.get(sid, 0), int(r[label_col]))
+    subjects = sorted(by_subject.keys())
+    subj_scores = np.array([float(np.quantile(by_subject[sid], 0.90)) for sid in subjects], dtype=np.float64)
+    subj_labels = np.array([int(subj_label[sid]) for sid in subjects], dtype=np.int64)
+    return subj_labels, subj_scores
 
 
 def main() -> None:
@@ -88,10 +133,18 @@ def main() -> None:
     parser.add_argument("--split", default="test", choices=["train", "val", "test"])
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--threshold-quantile", type=float, default=0.95)
+    parser.add_argument("--fixed-threshold", type=float, default=None)
+    parser.add_argument("--threshold-file", type=Path, default=None)
+    parser.add_argument(
+        "--allow-test-quantile",
+        action="store_true",
+        help="Allow split-local quantile thresholding on test split (diagnostics only).",
+    )
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     args = parser.parse_args()
 
     cfg = _load_cfg(args.config)
+    label_col = str(cfg["data"].get("label_col", "is_injured"))
     fe = str(cfg["data"].get("feature_engineering", "none")).lower()
     seq = SequenceSpec(
         seq_len=int(cfg["data"]["seq_len"]),
@@ -117,6 +170,7 @@ def main() -> None:
             ROOT / cfg["data"]["session_split_csv"],
             ROOT / cfg["data"]["json_root"],
             seq,
+            split_filter="train",
         )
         input_size = int(base + (_motion_stats_extra_channels() if fe == "motion_stats" else 0))
 
@@ -128,6 +182,7 @@ def main() -> None:
         include_injured=True,
         seed=int(cfg["experiment"]["seed"]),
         feature_dim=input_size,
+        label_col=label_col,
     )
     loader = DataLoader(
         dataset,
@@ -153,35 +208,56 @@ def main() -> None:
     ).to(device)
     model.load_state_dict(ckpt["model_state"])
 
-    coll = _collect_scores(model, loader, device)
+    coll = _collect_scores(model, loader, device, label_col=label_col)
     scores = coll["scores"]
     labels = coll["labels"]
     rows = coll["rows"]
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_csv(args.output_dir / "per_sample_scores.csv", rows)
+    _write_csv(args.output_dir / "per_sample_scores.csv", rows, label_col=label_col)
 
-    thr = _quantile_threshold(scores, args.threshold_quantile)
-    y_pred = (scores >= thr).astype(int)
-    acc = float((y_pred == labels).mean()) if len(labels) else float("nan")
-    positive_rate = float(y_pred.mean()) if len(y_pred) else float("nan")
+    threshold_source = "quantile_current_split"
+    if args.fixed_threshold is not None and args.threshold_file is not None:
+        raise ValueError("Use only one of --fixed-threshold or --threshold-file.")
+    if args.fixed_threshold is not None:
+        thr = float(args.fixed_threshold)
+        threshold_source = "fixed_argument"
+    elif args.threshold_file is not None:
+        thr = _load_threshold_from_file(args.threshold_file)
+        threshold_source = f"file:{args.threshold_file}"
+    else:
+        if args.split == "test" and not args.allow_test_quantile:
+            raise ValueError(
+                "Refusing split-local quantile threshold on test split. "
+                "Provide --fixed-threshold or --threshold-file. "
+                "If this is only for diagnostics, pass --allow-test-quantile."
+            )
+        thr = _quantile_threshold(scores, args.threshold_quantile)
+        if args.split == "test":
+            threshold_source = "quantile_test_diagnostic_override"
+
+    session_metrics = _classification_metrics(labels, scores, thr)
+    subj_labels, subj_scores = _aggregate_subject_p90(rows, label_col=label_col)
+    subject_metrics = _classification_metrics(subj_labels, subj_scores, thr)
+    diagnostic_only = bool(args.split == "test" and threshold_source == "quantile_test_diagnostic_override")
+    reporting_warning = (
+        "Diagnostic-only threshold on test split; do not use for final reporting."
+        if diagnostic_only
+        else ""
+    )
 
     metrics = {
         "split": args.split,
-        "num_samples": int(len(scores)),
-        "mean_recon_error": float(scores.mean()) if len(scores) else float("nan"),
-        "std_recon_error": float(scores.std()) if len(scores) else float("nan"),
+        "label_col": label_col,
         "threshold_quantile": float(args.threshold_quantile),
         "threshold_value": float(thr),
-        "threshold_accuracy": acc,
-        "predicted_positive_rate": positive_rate,
+        "threshold_source": threshold_source,
+        "diagnostic_only": diagnostic_only,
+        "reporting_warning": reporting_warning,
+        "primary_level": "subject_p90",
+        "subject_level": subject_metrics,
+        "session_level": session_metrics,
     }
-    if len(np.unique(labels)) >= 2:
-        metrics["auroc"] = float(roc_auc_score(labels, scores))
-        metrics["auprc"] = float(average_precision_score(labels, scores))
-    else:
-        metrics["auroc"] = float("nan")
-        metrics["auprc"] = float("nan")
 
     thresholds = {
         "q90": _quantile_threshold(scores, 0.90),

@@ -14,8 +14,9 @@ data:
   train_random_window: true
   train_include_injured: false
   val_include_injured: true
+  label_col: is_injured_strict
   # none: raw marker XYZ (padded). motion_stats: append per-frame |v|,|a|,|j| of the full pose.
-  feature_engineering: none
+  feature_engineering: motion_stats
 
 train:
   batch_size: 16
@@ -31,6 +32,18 @@ train:
   recon_class_weight: none
   # if true, same as data.train_include_injured: resample sessions so hurt vs healthy batches less skewed
   oversample_train_injured: false
+  # Scheduler used by train_anomaly.py (ReduceLROnPlateau).
+  scheduler:
+    enabled: true
+    mode: min        # min for val_loss, max for val_auroc
+    metric: val_loss # val_loss|val_auroc
+    factor: 0.5
+    patience: 4
+    min_lr: 0.000001
+  # Early stopping based on "best checkpoint improvement" rule (AUROC-first).
+  early_stopping:
+    enabled: true
+    patience: 10
 
 output:
   checkpoints_dir: checkpoints
