@@ -190,26 +190,34 @@ def _build_loaders(
         sampler = None
         train_shuffle = True
 
+    nw = int(t["num_workers"])
+    pin = nw > 0
     train_loader = DataLoader(
         train_ds,
         batch_size=int(t["batch_size"]),
         shuffle=train_shuffle,
         sampler=sampler,
-        num_workers=int(t["num_workers"]),
+        num_workers=nw,
         collate_fn=collate_ric_classifier,
         drop_last=False,
         worker_init_fn=_worker_init,
         generator=gen,
+        pin_memory=pin,
+        persistent_workers=pin,
+        prefetch_factor=2 if pin else None,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=int(t["batch_size"]),
         shuffle=False,
-        num_workers=int(t["num_workers"]),
+        num_workers=nw,
         collate_fn=collate_ric_classifier,
         drop_last=False,
         worker_init_fn=_worker_init,
         generator=gen,
+        pin_memory=pin,
+        persistent_workers=pin,
+        prefetch_factor=2 if pin else None,
     )
     return train_loader, val_loader, feat_dim, class_meta
 
