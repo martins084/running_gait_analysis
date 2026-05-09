@@ -1,7 +1,7 @@
 experiment:
-  name: anomaly_train_v2
+  name: classifier_v1
   seed: 42
-  run_id_prefix: ric-anom-v2
+  run_id_prefix: ric-clf-v1
 
 data:
   session_split_csv: data/processed/splits/session_split_v1.csv
@@ -10,14 +10,11 @@ data:
   prefer_mode: run
   normalize: zscore
   train_random_window: true
-  train_include_injured: false   # anomaly detection — train on healthy only
-  val_include_injured: true      # val needs both classes for AUROC
   label_col: is_injured_strict   # explicit injury metadata required (stricter label)
 
   feature_engineering: motion_stats   # appends |v|, |a|, |jerk| per frame
 
   # Butterworth 4th-order zero-phase low-pass filter.
-  # Standard for optoelectronic MoCap; removes skin artefacts above ~15 Hz.
   lp_filter_hz: 15.0
   lp_filter_source_hz: 120.0   # assumed recording rate; change to 200 for 200 Hz sessions
 
@@ -28,10 +25,9 @@ data:
   aug_noise_sigma: 0.015    # Gaussian noise std (in normalised feature space)
 
 model:
-  variant: v2               # v1 = baseline LSTM  |  v2 = BiLSTM+attention  |  v3 = TCN
+  hidden_size: 128
   num_layers: 2
-  dropout: 0.2
-  bidirectional: true
+  dropout: 0.3
 
 train:
   batch_size: 64
@@ -39,14 +35,12 @@ train:
   epochs: 100
   learning_rate: 0.0005
   weight_decay: 0.0001
-  hidden_size: 256
   grad_clip_norm: 1.0
   device: auto              # auto | cpu | cuda
-  loss: mse                 # mse | huber
 
-  # Class-weight / oversampling only applies when train_include_injured=true.
-  recon_class_weight: none
-  oversample_train_injured: false
+  # Class imbalance handling — WeightedRandomSampler or pos_weight fallback.
+  oversample: true          # true = WeightedRandomSampler; false = pos_weight on loss
+  pos_weight: null          # only used when oversample=false; null = auto-compute from data
 
   scheduler:
     enabled: true

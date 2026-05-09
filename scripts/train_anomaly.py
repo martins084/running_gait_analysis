@@ -1,11 +1,16 @@
 """
-Train RIC anomaly model using existing `GaitAnomalyDetector`.
+Train RIC anomaly model (V1 / V2 / V3).
 
-This is intentionally minimal and reproducible:
-- deterministic seed
-- config hash
-- checkpoint best/last
-- epoch metrics written to CSV/JSON
+Reproducibility guarantees:
+- deterministic seed (random, numpy, torch, cuda)
+- config SHA-256 hash logged
+- git commit hash logged
+- best.pt (AUROC-first) + last.pt checkpoints
+- epoch metrics written to CSV + JSON summary
+
+Scheduler options (train.scheduler.type):
+  plateau  — ReduceLROnPlateau (default, backward-compatible)
+  cosine   — CosineAnnealingLR with optional linear warmup
 """
 
 from __future__ import annotations
@@ -25,8 +30,13 @@ import torch
 import torch.nn as nn
 import yaml
 from sklearn.metrics import roc_auc_score
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import (
+    CosineAnnealingLR,
+    LinearLR,
+    ReduceLROnPlateau,
+    SequentialLR,
+)
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -39,7 +49,6 @@ from core.ric_dataset import (
     collate_ric_anomaly,
     compute_max_feature_dim,
 )
-from torch.utils.data import WeightedRandomSampler
 from models.gait_classifier import build_anomaly_model
 
 
@@ -77,27 +86,57 @@ def _pick_device(pref: str) -> torch.device:
 
 
 def _validate_scheduler_cfg(scheduler_cfg: dict) -> None:
-    """
-    Guard against silent scheduler misconfiguration.
-
-    ReduceLROnPlateau must use:
-    - mode=min for val_loss
-    - mode=max for val_auroc
-    """
+    """Guard against silent scheduler misconfiguration."""
     if not bool(scheduler_cfg.get("enabled", True)):
         return
-    metric = str(scheduler_cfg.get("metric", "val_loss")).lower()
-    mode = str(scheduler_cfg.get("mode", "min")).lower()
-    if metric not in {"val_loss", "val_auroc"}:
-        raise ValueError("train.scheduler.metric must be one of: val_loss, val_auroc")
-    if mode not in {"min", "max"}:
-        raise ValueError("train.scheduler.mode must be one of: min, max")
-    expected = "min" if metric == "val_loss" else "max"
-    if mode != expected:
-        raise ValueError(
-            f"Scheduler mismatch: metric={metric} requires mode={expected}, but got mode={mode}. "
-            "Fix config to avoid wrong LR updates."
-        )
+    stype = str(scheduler_cfg.get("type", "plateau")).lower()
+    if stype not in {"plateau", "cosine"}:
+        raise ValueError("train.scheduler.type must be 'plateau' or 'cosine'")
+    if stype == "plateau":
+        metric = str(scheduler_cfg.get("metric", "val_loss")).lower()
+        mode   = str(scheduler_cfg.get("mode",   "min")).lower()
+        if metric not in {"val_loss", "val_auroc"}:
+            raise ValueError("train.scheduler.metric must be one of: val_loss, val_auroc")
+        if mode not in {"min", "max"}:
+            raise ValueError("train.scheduler.mode must be one of: min, max")
+        expected = "min" if metric == "val_loss" else "max"
+        if mode != expected:
+            raise ValueError(
+                f"Scheduler mismatch: metric={metric} requires mode={expected}, got mode={mode}."
+            )
+
+
+def _build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    scheduler_cfg: dict,
+    n_epochs: int,
+) -> tuple[object | None, str]:
+    """Build scheduler from config.  Returns (scheduler, type_str)."""
+    if not bool(scheduler_cfg.get("enabled", True)):
+        return None, "none"
+    stype        = str(scheduler_cfg.get("type", "plateau")).lower()
+    min_lr       = float(scheduler_cfg.get("min_lr", 1e-6))
+    warmup_ep    = int(scheduler_cfg.get("warmup_epochs", 0))
+
+    if stype == "cosine":
+        main_ep = max(1, n_epochs - warmup_ep)
+        cosine  = CosineAnnealingLR(optimizer, T_max=main_ep, eta_min=min_lr)
+        if warmup_ep > 0:
+            warmup = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_ep)
+            sched  = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_ep])
+        else:
+            sched = cosine
+        return sched, "cosine"
+
+    # plateau (default, backward-compatible)
+    sched = ReduceLROnPlateau(
+        optimizer,
+        mode=str(scheduler_cfg.get("mode", "min")).lower(),
+        factor=float(scheduler_cfg.get("factor", 0.5)),
+        patience=int(scheduler_cfg.get("patience", 4)),
+        min_lr=min_lr,
+    )
+    return sched, "plateau"
 
 
 def _git_commit() -> str:
@@ -131,6 +170,14 @@ def _build_loaders(
         normalize=str(d.get("normalize", "zscore")),
         train_random_window=bool(d.get("train_random_window", True)),
         feature_engineering=fe,
+        # Low-pass filter
+        lp_filter_hz=float(d.get("lp_filter_hz", 0.0)),
+        lp_filter_source_hz=float(d.get("lp_filter_source_hz", 120.0)),
+        # Augmentation
+        aug_mirror=bool(d.get("aug_mirror", False)),
+        aug_mirror_prob=float(d.get("aug_mirror_prob", 0.5)),
+        aug_noise_sigma=float(d.get("aug_noise_sigma", 0.0)),
+        aug_time_warp=bool(d.get("aug_time_warp", False)),
     )
 
     base_dim = compute_max_feature_dim(
@@ -381,18 +428,8 @@ def main() -> None:
 
     scheduler_cfg = tcfg.get("scheduler", {})
     _validate_scheduler_cfg(scheduler_cfg)
-    scheduler_enabled = bool(scheduler_cfg.get("enabled", True))
-    scheduler_mode = str(scheduler_cfg.get("mode", "min")).lower()
     scheduler_metric = str(scheduler_cfg.get("metric", "val_loss")).lower()
-    scheduler = None
-    if scheduler_enabled:
-        scheduler = ReduceLROnPlateau(
-            optimizer,
-            mode=scheduler_mode,
-            factor=float(scheduler_cfg.get("factor", 0.5)),
-            patience=int(scheduler_cfg.get("patience", 4)),
-            min_lr=float(scheduler_cfg.get("min_lr", 1e-6)),
-        )
+    scheduler, scheduler_type = _build_scheduler(optimizer, scheduler_cfg, n_epochs)
     early_cfg = tcfg.get("early_stopping", {})
     early_enabled = bool(early_cfg.get("enabled", True))
     early_patience = int(early_cfg.get("patience", 10))
@@ -481,10 +518,11 @@ def main() -> None:
             epochs_without_improve += 1
 
         if scheduler is not None:
-            if scheduler_metric == "val_auroc":
-                scheduler.step(val_auroc if not np.isnan(val_auroc) else 0.0)
+            if scheduler_type == "plateau":
+                metric_val = val_auroc if scheduler_metric == "val_auroc" else val_loss
+                scheduler.step(metric_val if not np.isnan(metric_val) else 0.0)
             else:
-                scheduler.step(val_loss)
+                scheduler.step()  # cosine / sequential — no metric argument
 
         print(
             f"Epoch {epoch:03d}/{n_epochs}: "
