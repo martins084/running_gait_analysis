@@ -31,7 +31,7 @@ model:
 
 train:
   batch_size: 64
-  num_workers: 4            # set to 0 on Windows if multiprocessing issues arise
+  num_workers: 8            # set to 0 on Windows if multiprocessing issues arise
   epochs: 100
   learning_rate: 0.0005
   weight_decay: 0.0001
